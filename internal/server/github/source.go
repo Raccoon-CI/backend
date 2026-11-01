@@ -147,6 +147,17 @@ func (c *Client) ResolveRef(ctx context.Context, installationID int64, repo, ref
 	return res.SHA, nil
 }
 
+// DefaultBranch returns the name of the repository's default branch.
+func (c *Client) DefaultBranch(ctx context.Context, installationID int64, repo string) (string, error) {
+	var res struct {
+		DefaultBranch string `json:"default_branch"`
+	}
+	if err := c.get(ctx, installationID, "/repos/"+repo, &res); err != nil {
+		return "", err
+	}
+	return res.DefaultBranch, nil
+}
+
 // FileAt returns one file of a repository at a ref.
 func (c *Client) FileAt(ctx context.Context, installationID int64, repo, filePath, ref string) ([]byte, error) {
 	var f struct {

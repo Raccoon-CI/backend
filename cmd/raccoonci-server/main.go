@@ -19,10 +19,12 @@ import (
 	"syscall"
 	"time"
 
+	"raccoonci/internal/blob"
 	"raccoonci/internal/dispatch"
 	"raccoonci/internal/instabox"
 	"raccoonci/internal/server/api"
 	"raccoonci/internal/server/artifacts"
+	"raccoonci/internal/server/caches"
 	"raccoonci/internal/server/config"
 	"raccoonci/internal/server/execute"
 	"raccoonci/internal/server/github"
@@ -68,6 +70,12 @@ func run(args []string) error {
 	snapshot := fs.String("snapshot", os.Getenv("RACCOONCI_INSTABOX_SNAPSHOT"), "the InstaBox runner snapshot machines start from (env RACCOONCI_INSTABOX_SNAPSHOT); needed to run jobs")
 	status := fs.Bool("status", true, "report each run to GitHub as a commit status (raccoonci / <workflow>) on the commit it ran; the token or App needs to write commit statuses")
 	localRunner := fs.String("local-runner", "", "run jobs on THIS machine with this raccoonci binary, as this user and without isolation: for development and trusted code only")
+	s3Bucket := fs.String("storage-s3-bucket", "", "keep artifacts and caches in this S3-compatible bucket (R2, S3, ...) instead of on this disk; the bucket must be private (it is checked at start)")
+	s3Endpoint := fs.String("storage-s3-endpoint", "", "the bucket's endpoint, for an S3-compatible store (R2: https://<account>.r2.cloudflarestorage.com); empty for AWS")
+	s3Region := fs.String("storage-s3-region", "", "the bucket's region (R2: auto; default us-east-1)")
+	s3Prefix := fs.String("storage-s3-prefix", "", "a prefix for every key in the bucket, to share it with something else")
+	s3PathStyle := fs.Bool("storage-s3-path-style", false, "address the bucket as host/bucket/key (most self-hosted stores need it)")
+	cacheLimitGB := fs.Int("cache-limit-gb", 5, "how much one cache space (the default branch, or one other ref) may hold, in GB; the least recently used go first")
 	var allow listFlag
 	fs.Var(&allow, "allow", "a repository the server works for, owner/name or owner/* (repeatable; at least one)")
 	fs.Usage = func() {
@@ -78,7 +86,8 @@ Secrets are read from the environment, or from the file named by NAME_FILE (mode
   RACCOONCI_API_TOKEN            bearer token for /v1 (without it the API answers 503)
   RACCOONCI_GITHUB_APP_ID        with RACCOONCI_GITHUB_APP_KEY_FILE (the App's private key, mode 600): act as a GitHub App
   RACCOONCI_GITHUB_TOKEN         instead of an App, one token (development, with a repository webhook)
-  INSTABOX_API_KEY (or IBX_API_KEY)  the InstaBox key machines are made with (with -public-url and -snapshot: run jobs)`)
+  INSTABOX_API_KEY (or IBX_API_KEY)  the InstaBox key machines are made with (with -public-url and -snapshot: run jobs)
+  RACCOONCI_STORAGE_S3_KEY, RACCOONCI_STORAGE_S3_SECRET  the bucket's access key (with -storage-s3-bucket)`)
 		fs.PrintDefaults()
 	}
 	fs.Parse(args)
@@ -178,13 +187,32 @@ Secrets are read from the environment, or from the file named by NAME_FILE (mode
 			mux.Handle("/agent/", http.StripPrefix("/agent", ctl.Handler()))
 			machine = execute.Instabox{P: prov}
 		}
-		arts, err := artifacts.New(artifacts.Config{Dir: filepath.Join(*dataDir, "artifacts"), PublicURL: base})
+		var bucket *blob.S3Config
+		if *s3Bucket != "" {
+			if bucket, err = storageConfig(*s3Bucket, *s3Endpoint, *s3Region, *s3Prefix, *s3PathStyle); err != nil {
+				return err
+			}
+			if err := checkStorage(ctx, bucket, log); err != nil {
+				return err
+			}
+		}
+		arts, err := artifacts.New(artifacts.Config{Dir: filepath.Join(*dataDir, "artifacts"), PublicURL: base, S3: bucket})
 		if err != nil {
 			return err
 		}
 		defer arts.Close()
 		arts.Mount(mux)
-		ex := &execute.Executor{Store: st, Source: gh, Machine: machine, Services: arts,
+		cacheSvc, err := caches.New(caches.Config{
+			Dir: filepath.Join(*dataDir, "caches"), PublicURL: base, Signer: arts.Signer(), S3: bucket,
+			MaxBytes: int64(*cacheLimitGB) << 30,
+			Spaces:   (&caches.Resolver{Runs: st, Branches: gh}).Spaces,
+		})
+		if err != nil {
+			return err
+		}
+		defer cacheSvc.Close()
+		cacheSvc.Mount(mux)
+		ex := &execute.Executor{Store: st, Source: gh, Machine: machine, Services: cacheSvc.Extend(arts),
 			WorkDir: filepath.Join(*dataDir, "work"), Log: log}
 		if *status {
 			ex.Reporter = execute.Statuses{GH: gh}

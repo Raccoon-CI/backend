@@ -64,11 +64,22 @@ A run sets the commit status `raccoonci / <workflow name>` on the commit it ran:
 
 `/v1/openapi.yaml` describes all of it; a test keeps it in step with the routes.
 
+## Caches and where objects live
+
+`actions/cache` and the `cache:` option of the `setup-*` actions work (protocol v1). A cache is not shared by everything: each run saves into the **space of its own ref** and restores from that and from the **default branch's** space.
+
+- The default branch has a space only its own runs write.
+- Every other ref (a feature branch, a tag, a pull request's merge ref, from a fork or not) has a space of its own, restores from the default branch's too, and can neither read another ref's nor write to the default branch's. A pull request that saves a cache under the key the default branch uses lands in its own space; the default branch keeps its entry.
+- Repositories never share. Unlike GitHub, a pull request cannot restore from its base branch unless that is the default branch.
+- Each space is limited to `-cache-limit-gb` (default 5); the least recently used entries go first. Spaces nobody uses any more are not removed yet, and the limit is per space, not per repository.
+
+Objects (artifacts and caches) live in a directory under `-data-dir`, or in a bucket the user provides: `-storage-s3-bucket B [-storage-s3-endpoint URL] [-storage-s3-region R] [-storage-s3-prefix P] [-storage-s3-path-style]`, with `RACCOONCI_STORAGE_S3_KEY` and `RACCOONCI_STORAGE_S3_SECRET`. For Cloudflare R2: endpoint `https://<account id>.r2.cloudflarestorage.com`, region `auto`. At start the bucket is tried (write, read back through a presigned link, delete) and the server refuses to start with one that does not work; a bucket that gives its objects to anyone without credentials is a warning in the log. Keep the bucket private. Downloads are presigned links straight to the bucket; uploads still pass through the server. The bucket is one for the whole server for now; one per organization comes with the secrets store.
+
 ## What a run is, for now
 
 - The commit is the one the event is about; for a pull request that is its **head**, not the merge commit GitHub would use.
 - The source comes from GitHub's archive of the commit: no `.git` directory, no history.
-- No secrets, so `secrets.GITHUB_TOKEN` is empty. No cache service (jobs run as when it is missing); artifacts work, kept in memory-backed metadata, so a restart forgets them.
+- No secrets, so `secrets.GITHUB_TOKEN` is empty. Artifacts work, but their metadata is in memory, so a restart forgets them (their data stays in the store). Caches work (next section).
 - `github.run_number` is the run id.
 
 ## Checked so far
@@ -79,4 +90,5 @@ A run sets the commit status `raccoonci / <workflow name>` on the commit it ran:
 - **The same run on an InstaBox machine** (runner snapshot `raccoonci-runner-9c482bc`, reached through the tunnel at `/agent`): success, the machine up in 9.8 s, 16 s from the request to the end of the run, the same steps in the log, and the machine was gone afterwards.
 - **Deliveries sent by GitHub itself** (a repository webhook on `bench-lint-docs` through the tunnel): the ping got 200; two pushes and a pull request being opened and closed arrived signed, were accepted with 202, read the repository's workflow at the commit with the real API, and were recorded as ignored (the repository's only workflow listens to `workflow_dispatch`). The token lacked the `workflow` scope, so no push-triggered workflow could be added to see a run created from a real delivery.
 - **Status, cancel, rerun on InstaBox:** a run's commit showed `pending` then `success` ("Succeeded in 27s") on GitHub; a run cancelled 5 s in ended as cancelled with status `error`; a rerun repeated the first (`rerun_of`) and succeeded. The cancelled run exposed a leak: the machine was still being created, the delete was refused (409 `operation_conflict`) and given up on, so it ran until its 2 h deadline. `instabox.Client.DeleteMachine` now waits and asks again; checked live (no machine left after a cancel during creation).
-- **Not tried:** a run created from a delivery GitHub sent, a real pull request, App authentication against real GitHub, artifacts from a real job, a run with a matrix.
+- **Caches in real jobs on InstaBox machines** (`bench-go-integration`, `setup-go` with `cache: true`, a postgres service container): the first run found no cache and saved 44 MB through the server; a rerun restored it ("Cache restored from key …", "Cache hit occurred on the primary key"); a run on a new branch restored it too, through the default branch's space; only the default branch's space exists on disk; no machine was left afterwards. The isolation rules are checked by tests with several runs (feature branches, a pull-request ref, another repository, a restart), which fail when the isolation is removed.
+- **Not tried:** a bucket (no access key for the dev R2 bucket was given, so the S3 path of artifacts and caches and the bucket check are tested only against fakes), artifacts uploaded by a real job, a run created from a delivery GitHub sent, a real pull request, App authentication against real GitHub, artifacts from a real job, a run with a matrix.

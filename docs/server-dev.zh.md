@@ -64,11 +64,22 @@ run 会在它所跑的提交上设置 commit status `raccoonci / <workflow 名>`
 
 `/v1/openapi.yaml` 描述这一切；有一个测试保证它和路由一致。
 
+## 缓存，以及对象放在哪里
+
+`actions/cache` 和 `setup-*` 的 `cache:` 选项都能用（v1 协议）。缓存不是所有人共用一份：每个 run 把缓存存进**它自己那个 ref 的空间**，恢复时从这个空间和**默认分支的空间**找。
+
+- 默认分支有一个空间，只有默认分支的 run 能写。
+- 其余的 ref（功能分支、tag、pull request 的合并 ref，不管是不是来自 fork）各有自己的空间，也能从默认分支的空间恢复，但读不到别的 ref 的空间，也写不进默认分支的空间。pull request 用默认分支用的那个 key 保存缓存，会落进它自己的空间，默认分支的那一条不变。
+- 不同仓库之间永远不共用。和 GitHub 不同的是，pull request 不能从它的目标分支恢复，除非目标分支就是默认分支。
+- 每个空间的上限是 `-cache-limit-gb`（默认 5），超了就淘汰最久没用的条目。没人再用的空间还不会被删除，上限是按空间算的，不是按仓库。
+
+对象（artifact 和缓存）放在 `-data-dir` 下的目录里，或者放在用户自己提供的桶里：`-storage-s3-bucket B [-storage-s3-endpoint URL] [-storage-s3-region R] [-storage-s3-prefix P] [-storage-s3-path-style]`，加上 `RACCOONCI_STORAGE_S3_KEY` 和 `RACCOONCI_STORAGE_S3_SECRET`。用 Cloudflare R2 的话：endpoint 是 `https://<账号 id>.r2.cloudflarestorage.com`，region 填 `auto`。启动时会试一遍这个桶（写入、通过预签名链接读回、删除），桶不能用就拒绝启动；如果桶不用凭证就把对象给任何人，会在日志里警告。桶要保持私有。下载是直接指向桶的预签名链接，上传仍然经过服务端。现在整个服务端用一个桶，每个组织一个桶要等密钥存储做好。
+
 ## 现在的 run 是什么样
 
 - 提交是事件所指的那个；pull request 用的是它的**头提交**，不是 GitHub 会用的合并提交。
 - 源码来自 GitHub 对该提交的归档：没有 `.git` 目录，没有历史。
-- 没有密钥，所以 `secrets.GITHUB_TOKEN` 是空的。没有 cache 服务（job 的表现和服务不存在时一样）；artifact 可用，但元数据在内存里，重启就忘。
+- 没有密钥，所以 `secrets.GITHUB_TOKEN` 是空的。artifact 可用，但元数据在内存里，重启就忘（数据还在存储里）。cache 可用（见下一节）。
 - `github.run_number` 就是 run 的 id。
 
 ## 目前验证过的
@@ -79,4 +90,5 @@ run 会在它所跑的提交上设置 commit status `raccoonci / <workflow 名>`
 - **同一个 run 放到 InstaBox 机器上跑**（runner 快照 `raccoonci-runner-9c482bc`，机器经隧道的 `/agent` 回连服务端）：成功，机器 9.8 秒就绪，从请求到 run 结束 16 秒，日志里是同样的步骤，结束后机器已被删除。
 - **GitHub 自己发出的投递**（`bench-lint-docs` 上的仓库 webhook，经隧道）：ping 回 200；两次 push，以及一个 pull request 的打开和关闭，都带着签名到达，回 202，用真实 API 读了该提交上的 workflow，并记为已忽略（仓库里唯一的 workflow 只监听 `workflow_dispatch`）。token 没有 `workflow` 权限，没法加一个由 push 触发的 workflow，所以还没看到由真实投递建出来的 run。
 - **InstaBox 上的状态、取消、重跑：** run 的提交在 GitHub 上先 `pending` 后 `success`（"Succeeded in 27s"）；5 秒时取消的 run 记为 cancelled，状态是 `error`；重跑重复了第一次（`rerun_of`）并成功。取消的那次暴露了一个泄漏：机器还在创建，删除被拒绝（409 `operation_conflict`）后就放弃了，机器一直跑到 2 小时的期限。现在 `instabox.Client.DeleteMachine` 会等待后重试；真机验证过（创建中取消后没有残留机器）。
-- **没试过：** 由 GitHub 发出的投递建出的 run、真实的 pull request、App 对真实 GitHub 的认证、真实 job 里的 artifact、带 matrix 的 run。
+- **真实 job 里的缓存，在 InstaBox 机器上**（`bench-go-integration`，`setup-go` 带 `cache: true`，还有一个 postgres 服务容器）：第一次没找到缓存，经服务端保存了 44 MB；重跑时恢复成功（"Cache restored from key …"、"Cache hit occurred on the primary key"）；在新分支上的 run 也恢复成功，走的是默认分支的空间；磁盘上只有默认分支的那一个空间；结束后没有残留机器。隔离规则有用多个 run 做的测试（功能分支、pull request 的 ref、另一个仓库、重启），去掉隔离后这些测试会失败。
+- **没试过：** 桶（没有给开发用 R2 桶的访问密钥，所以 artifact 和缓存走 S3 的路径以及桶的检查只用假的测过）、真实 job 上传 artifact、由 GitHub 发出的投递建出的 run、真实的 pull request、App 对真实 GitHub 的认证、真实 job 里的 artifact、带 matrix 的 run。

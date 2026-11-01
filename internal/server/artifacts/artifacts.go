@@ -33,12 +33,16 @@ type Config struct {
 	// PublicURL is the https address machines reach the service at, without
 	// a path: every link and environment value is built on it.
 	PublicURL string
+	// S3, if set, keeps the data in that bucket under the prefix
+	// "artifacts/" (after its own Prefix); downloads are presigned links to
+	// the bucket. Nil keeps it in Dir.
+	S3 *blob.S3Config
 }
 
 // Service is the artifact service.
 type Service struct {
 	art    *artifact.Service
-	store  *blob.Dir
+	dir    *blob.Dir // nil when the data is in a bucket
 	signer *artifact.Signer
 }
 
@@ -56,17 +60,33 @@ func New(c Config) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	store, err := blob.NewDir(filepath.Join(c.Dir, "objects"), c.PublicURL, key)
-	if err != nil {
-		return nil, err
+	var store blob.Store
+	var dir *blob.Dir
+	if c.S3 != nil {
+		s3 := *c.S3
+		s3.Prefix += "artifacts/"
+		if store, err = blob.NewS3(s3); err != nil {
+			return nil, err
+		}
+	} else {
+		if dir, err = blob.NewDir(filepath.Join(c.Dir, "objects"), c.PublicURL, key); err != nil {
+			return nil, err
+		}
+		store = dir
 	}
 	art, err := artifact.New(artifact.Config{Store: store, Signer: signer, BaseURL: c.PublicURL, SpoolDir: filepath.Join(c.Dir, "spool")})
 	if err != nil {
-		store.Close()
+		if dir != nil {
+			dir.Close()
+		}
 		return nil, err
 	}
-	return &Service{art: art, store: store, signer: signer}, nil
+	return &Service{art: art, dir: dir, signer: signer}, nil
 }
+
+// Signer is what signs the tokens and links of this service; the cache service
+// uses the same one, so one token serves both, as on GitHub.
+func (s *Service) Signer() *artifact.Signer { return s.signer }
 
 // Mount puts the service's routes on mux: the Twirp API, the blob upload and
 // the download links. Every one is guarded by a token or a signed link.
@@ -74,7 +94,9 @@ func (s *Service) Mount(mux *http.ServeMux) {
 	h := s.art.Handler()
 	mux.Handle("/twirp/", h)
 	mux.Handle("/_blob/", h)
-	mux.Handle(blob.DownloadPrefix, s.store.Handler())
+	if s.dir != nil {
+		mux.Handle(blob.DownloadPrefix, s.dir.Handler())
+	}
 }
 
 // JobEnv is what a step needs to reach the service as one job of one run:
@@ -87,5 +109,7 @@ func (s *Service) JobEnv(run int64, job string) (map[string]string, error) {
 // Close stops the service's background work.
 func (s *Service) Close() {
 	s.art.Close()
-	s.store.Close()
+	if s.dir != nil {
+		s.dir.Close()
+	}
 }
