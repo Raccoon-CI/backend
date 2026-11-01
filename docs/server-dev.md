@@ -2,7 +2,7 @@
 
 [中文版](server-dev.zh.md) — keep the two in step.
 
-State: steps 1 and 2 of `docs/server-design.md`. The server receives GitHub's `push` and `pull_request` deliveries (or a request to start a workflow by hand), decides which workflows they start, stores a queued run for each, fetches the repository at the commit, runs every job instance on a machine, stores the log, and shows runs and logs through the API. It reports each run back to GitHub as a commit status, and can cancel and repeat runs. It does not yet keep secrets, send check runs (those need a GitHub App) or log users in.
+State: steps 1 and 2 of `docs/server-design.md`. The server receives GitHub's `push` and `pull_request` deliveries (or a request to start a workflow by hand), decides which workflows they start, stores a queued run for each, fetches the repository at the commit, runs every job instance on a machine, stores the log, and shows runs and logs through the API. It reports each run back to GitHub as a commit status, and can cancel and repeat runs. It keeps secrets and variables (sealed in the database) and gives runs the ones they name, and has API tokens with roles. It does not yet send check runs (those need a GitHub App) or log users in with GitHub.
 
 ## Build and start
 
@@ -25,7 +25,9 @@ Each is an environment variable `NAME`, or `NAME_FILE` naming a file that only y
 | Name | Meaning |
 |------|---------|
 | `RACCOONCI_WEBHOOK_SECRET` | signs GitHub's deliveries (required) |
-| `RACCOONCI_API_TOKEN` | bearer token for `/v1` (without it the API answers 503) |
+| `RACCOONCI_API_TOKEN` | the bootstrap bearer token for `/v1`, with the admin role; others are made through the API |
+| `RACCOONCI_MASTER_KEY` | 32 bytes (`openssl rand -hex 32`) that seal the secrets in the database; without it secrets and variables are off. Losing it loses the secrets |
+| `RACCOONCI_MASTER_KEY_OLD` | with `-master-key-old-id`: the key from before a rotation, so older secrets still open (a new one is sealed with the current key, `-master-key-id`) |
 | `RACCOONCI_GITHUB_APP_ID`, `RACCOONCI_GITHUB_APP_KEY_FILE` | act as a GitHub App (installation tokens from the App's private key) |
 | `RACCOONCI_GITHUB_TOKEN` | instead of an App: one token, for development with a repository webhook |
 | `INSTABOX_API_KEY` / `IBX_API_KEY` | the InstaBox key (the first name is reserved on InstaBox machines) |
@@ -58,6 +60,25 @@ POST /v1/runs/{id}/cancel          # a queued run ends at once; a running one is
 POST /v1/runs/{id}/rerun           # a new run like a finished one: same commit, same workflow file as it was, same inputs
 ```
 
+## Secrets, variables and tokens
+
+All of this needs the admin role. A scope is `org:<name>` or `repo:<owner>/<name>`, in lower case.
+
+```sh
+PUT    /v1/secrets   {"scope":"repo:acme/web","name":"DEPLOY_TOKEN","value":"…"}   # sealed; cannot be read back
+GET    /v1/secrets?scope=repo:acme/web                                              # names only
+DELETE /v1/secrets?scope=repo:acme/web&name=DEPLOY_TOKEN
+PUT/GET/DELETE /v1/vars                                                             # the same, for variables, which can be read back
+POST   /v1/tokens    {"name":"dashboard","role":"read"}                              # the token is in the answer once
+GET    /v1/tokens    DELETE /v1/tokens/{id}                                          # list; revoke
+```
+
+- A secret is sealed (AES-256-GCM, under the master key, bound to its scope and name) before it reaches the database, and opened only when a run is about to be sent to a machine. It travels in the job's assignment, over https, and the runner masks it in what steps print. It is never in the log, the API's answers or an error.
+- A run gets the secrets its workflow names literally (`secrets.NAME`, `secrets['NAME']`), the repository's over the organization's of the same name. A secret reached by a computed name, or by passing all of `secrets` on, is not sent. Names are kept in capitals; names starting with `GITHUB_` are not allowed.
+- A pull request from another repository (or one whose fork was deleted) gets **no secrets**, and its log says so. It still gets variables.
+- A `read` token reads runs, jobs, logs and events; an `admin` token also starts, cancels and repeats runs and manages secrets, variables and tokens. Only a hash of a token is kept.
+- `secrets.GITHUB_TOKEN` is not made by the server: a secret of that name is not allowed, so it is empty.
+
 ## Status on GitHub
 
 A run sets the commit status `raccoonci / <workflow name>` on the commit it ran: `pending` ("Running") when it starts, then `success`, `failure` or `error` ("Cancelled") with how long it took. It shows on the commit and, for a pull request, in its checks. It works with a plain token (needs the `repo:status` ability) and with a GitHub App (needs the "Commit statuses" permission); `-status=false` turns it off. A failed report is logged and never fails the run. Check runs, one line per job with annotations and a summary, can only be written by a GitHub App and are not done.
@@ -79,7 +100,7 @@ Objects (artifacts and caches) live in a directory under `-data-dir`, or in a bu
 
 - The commit is the one the event is about; for a pull request that is its **head**, not the merge commit GitHub would use.
 - The source comes from GitHub's archive of the commit: no `.git` directory, no history.
-- No secrets, so `secrets.GITHUB_TOKEN` is empty. Artifacts work, but their metadata is in memory, so a restart forgets them (their data stays in the store). Caches work (next section).
+- `secrets.GITHUB_TOKEN` is empty. Artifacts work, but their metadata is in memory, so a restart forgets them (their data stays in the store). Caches work (next section).
 - `github.run_number` is the run id.
 
 ## Checked so far
@@ -91,4 +112,5 @@ Objects (artifacts and caches) live in a directory under `-data-dir`, or in a bu
 - **Deliveries sent by GitHub itself** (a repository webhook on `bench-lint-docs` through the tunnel): the ping got 200; two pushes and a pull request being opened and closed arrived signed, were accepted with 202, read the repository's workflow at the commit with the real API, and were recorded as ignored (the repository's only workflow listens to `workflow_dispatch`). The token lacked the `workflow` scope, so no push-triggered workflow could be added to see a run created from a real delivery.
 - **Status, cancel, rerun on InstaBox:** a run's commit showed `pending` then `success` ("Succeeded in 27s") on GitHub; a run cancelled 5 s in ended as cancelled with status `error`; a rerun repeated the first (`rerun_of`) and succeeded. The cancelled run exposed a leak: the machine was still being created, the delete was refused (409 `operation_conflict`) and given up on, so it ran until its 2 h deadline. `instabox.Client.DeleteMachine` now waits and asks again; checked live (no machine left after a cancel during creation).
 - **Caches in real jobs on InstaBox machines** (`bench-go-integration`, `setup-go` with `cache: true`, a postgres service container): the first run found no cache and saved 44 MB through the server; a rerun restored it ("Cache restored from key …", "Cache hit occurred on the primary key"); a run on a new branch restored it too, through the default branch's space; only the default branch's space exists on disk; no machine was left afterwards. The isolation rules are checked by tests with several runs (feature branches, a pull-request ref, another repository, a restart), which fail when the isolation is removed.
+- **Secrets:** through the tunnel, a secret and a variable were stored and listed (the secret by name only), a `read` token got 200 on runs and 403 on secrets, a revoked token stopped working. With the real runner (`RACCOONCI_TEST_BIN=dist/raccoonci go test ./internal/server/execute -run Real`): a step printed `token=[***]` for the secret and `region=[eu]` for the variable, the secret's value appeared nowhere in the log, and a fork's run printed an empty token. Not run on a real GitHub-triggered workflow that uses a secret (no workflow file can be added with the token at hand).
 - **Not tried:** a bucket (no access key for the dev R2 bucket was given, so the S3 path of artifacts and caches and the bucket check are tested only against fakes), artifacts uploaded by a real job, a run created from a delivery GitHub sent, a real pull request, App authentication against real GitHub, artifacts from a real job, a run with a matrix.

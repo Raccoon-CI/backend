@@ -3,9 +3,12 @@ info:
   title: Raccoon CI server API
   version: "0.1"
   description: |
-    Read side of the server (draft). Every /v1 route except this file needs
-    `Authorization: Bearer <token>`. The API is closed (503) while the server has
-    no API token configured.
+    The server's API (draft). Every /v1 route except this file needs
+    `Authorization: Bearer <token>`. A token has a role: `read` reads runs, jobs,
+    logs and events; `admin` also starts, cancels and repeats runs and manages
+    secrets, variables and tokens (403 for a read token). The bootstrap token the
+    server is started with is an admin token; others are made through
+    `POST /v1/tokens`. With no way to tell tokens apart the API is closed (503).
 paths:
   /healthz:
     get:
@@ -80,6 +83,136 @@ paths:
         "403": {$ref: "#/components/responses/Error"}
         "404": {$ref: "#/components/responses/Error"}
         "422": {$ref: "#/components/responses/Error"}
+  /v1/secrets:
+    get:
+      summary: The names of the secrets of a scope (never their values)
+      description: Needs the admin role, like everything about secrets. A scope is `org:<name>` or `repo:<owner>/<name>`, in lower case. A run gets the secrets its workflow names literally (`secrets.NAME`), the repository's over the organization's; a pull request from a fork gets none.
+      parameters:
+        - {name: scope, in: query, required: true, schema: {type: string}}
+      responses:
+        "200":
+          description: the secrets
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  secrets:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name: {type: string}
+                        updated_at: {type: string, format: date-time}
+        "400": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Error"}
+    put:
+      summary: Make or replace a secret
+      description: The value is sealed before it is stored and cannot be read back. Names are kept in capitals; names starting with GITHUB_ are reserved; a value is 1 to 49152 bytes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/SecretBody"}
+      responses:
+        "204": {description: stored}
+        "400": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Error"}
+    delete:
+      summary: Delete a secret
+      parameters:
+        - {name: scope, in: query, required: true, schema: {type: string}}
+        - {name: name, in: query, required: true, schema: {type: string}}
+      responses:
+        "204": {description: deleted}
+        "404": {$ref: "#/components/responses/Error"}
+  /v1/vars:
+    get:
+      summary: The variables of a scope, with their values
+      parameters:
+        - {name: scope, in: query, required: true, schema: {type: string}}
+      responses:
+        "200":
+          description: the variables
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  vars:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name: {type: string}
+                        value: {type: string}
+                        updated_at: {type: string, format: date-time}
+        "400": {$ref: "#/components/responses/Error"}
+    put:
+      summary: Make or replace a variable
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/SecretBody"}
+      responses:
+        "204": {description: stored}
+        "400": {$ref: "#/components/responses/Error"}
+    delete:
+      summary: Delete a variable
+      parameters:
+        - {name: scope, in: query, required: true, schema: {type: string}}
+        - {name: name, in: query, required: true, schema: {type: string}}
+      responses:
+        "204": {description: deleted}
+        "404": {$ref: "#/components/responses/Error"}
+  /v1/tokens:
+    get:
+      summary: The API tokens (never the tokens themselves)
+      responses:
+        "200":
+          description: the tokens
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tokens:
+                    type: array
+                    items: {$ref: "#/components/schemas/Token"}
+    post:
+      summary: Make a token
+      description: The token is in the answer once; only a hash of it is kept. `read` can read runs, jobs, logs and events; `admin` can also change anything and manage secrets and tokens.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, role]
+              properties:
+                name: {type: string}
+                role: {type: string, enum: [read, admin]}
+      responses:
+        "201":
+          description: the token, shown once
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - {$ref: "#/components/schemas/Token"}
+                  - type: object
+                    properties:
+                      token: {type: string}
+        "400": {$ref: "#/components/responses/Error"}
+  /v1/tokens/{id}:
+    delete:
+      summary: Revoke a token; it stops working at once
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: integer}}
+      responses:
+        "204": {description: revoked}
+        "404": {$ref: "#/components/responses/Error"}
   /v1/runs/{id}/cancel:
     post:
       summary: Cancel a queued or running run
@@ -221,6 +354,22 @@ components:
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
         workflow: {type: string, description: "only in the detail"}
+    SecretBody:
+      type: object
+      required: [scope, name, value]
+      properties:
+        scope: {type: string, description: "org:<name> or repo:<owner>/<name>"}
+        name: {type: string}
+        value: {type: string}
+    Token:
+      type: object
+      properties:
+        id: {type: integer}
+        name: {type: string}
+        role: {type: string, enum: [read, admin]}
+        created_at: {type: string, format: date-time}
+        last_used_at: {type: string, format: date-time}
+        revoked_at: {type: string, format: date-time}
     LogEvent:
       type: object
       properties:

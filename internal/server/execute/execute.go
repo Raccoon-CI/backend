@@ -17,8 +17,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,6 +33,7 @@ import (
 	"raccoonci/internal/runner"
 	"raccoonci/internal/runnerimages"
 	"raccoonci/internal/server/github"
+	"raccoonci/internal/server/secrets"
 	"raccoonci/internal/server/store"
 	"raccoonci/internal/value"
 	"raccoonci/internal/wire"
@@ -55,6 +58,11 @@ type Services interface {
 	JobEnv(run int64, job string) (map[string]string, error)
 }
 
+// SecretsSource says which secrets and variables a run gets (secrets.Service).
+type SecretsSource interface {
+	ForRun(ctx context.Context, repo, workflowText string, fork bool) (secrets.Run, error)
+}
+
 // Executor takes queued runs and runs them.
 type Executor struct {
 	Store    store.Store
@@ -75,7 +83,9 @@ type Executor struct {
 	Poll time.Duration
 	// Reporter, if set, is told when a run starts and how it ended.
 	Reporter Reporter
-	Log      *slog.Logger
+	// Secrets, if set, gives each run its secrets and variables.
+	Secrets SecretsSource
+	Log     *slog.Logger
 
 	wake    chan struct{}
 	once    sync.Once
@@ -209,7 +219,7 @@ func (e *Executor) execute(parent context.Context, run store.Run) {
 	res, err := engine.Run(ctx, x.w, engine.Options{
 		Remote:      x.runInstance,
 		Github:      x.github,
-		Vars:        value.Object{},
+		Vars:        x.vars,
 		Inputs:      x.inputs,
 		Images:      x.images,
 		Catalog:     catalog.Default(),
@@ -296,6 +306,10 @@ type execution struct {
 	sourceTar   string
 	maxParallel int
 	n           atomic.Int32
+	// secrets are the opened values this run's workflow names, sent to each
+	// machine in its assignment; vars the variables of its repository.
+	secrets map[string]string
+	vars    value.Object
 }
 
 func (e *Executor) prepare(ctx context.Context, run store.Run, sink *sink) (*execution, error) {
@@ -319,12 +333,34 @@ func (e *Executor) prepare(ctx context.Context, run store.Run, sink *sink) (*exe
 	if err != nil {
 		return nil, err
 	}
+	// The secrets and variables are resolved once, before anything is made, so
+	// a failure here leaves nothing behind. Opened values stay in memory and
+	// go to the machines in the assignment; they are never written to disk or
+	// to the log (the runner masks them in what it prints).
+	var secretValues map[string]string
+	vars := value.Object{}
+	if e.Secrets != nil {
+		r, err := e.Secrets.ForRun(ctx, run.Repo, run.WorkflowText, run.Fork)
+		if err != nil {
+			return nil, fmt.Errorf("reading the secrets: %w", err)
+		}
+		secretValues = r.Secrets
+		for _, k := range slices.Sorted(maps.Keys(r.Vars)) {
+			vars = append(vars, value.Field{Key: k, Value: r.Vars[k]})
+		}
+		for _, w := range r.Warnings {
+			sink.Add(runner.Event{Kind: runner.Warning, Time: time.Now(), Text: w})
+		}
+		if run.Fork {
+			sink.Add(runner.Event{Kind: runner.Notice, Time: time.Now(), Text: "this run is for a pull request from another repository: it gets no secrets"})
+		}
+	}
 	dir := filepath.Join(e.WorkDir, fmt.Sprintf("run-%d", run.ID))
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
 	x := &execution{e: e, run: run, log: e.log().With("run", run.ID), sink: sink, w: w, inputs: inputs, images: images, dir: dir,
-		github: githubContext(run, payload), maxParallel: e.MaxParallel}
+		github: githubContext(run, payload), maxParallel: e.MaxParallel, secrets: secretValues, vars: vars}
 	if x.maxParallel < 1 {
 		x.maxParallel = 8
 	}
@@ -380,7 +416,7 @@ func (x *execution) runInstance(ctx context.Context, inst engine.RemoteInstance)
 		{Key: "strategy", Value: orEmpty(inst.Strategy)},
 		{Key: "needs", Value: orEmpty(inst.Needs)},
 		{Key: "inputs", Value: orEmpty(x.inputs)},
-		{Key: "vars", Value: value.Object{}},
+		{Key: "vars", Value: x.vars},
 	})
 	if err != nil {
 		return runner.Result{}, err
@@ -407,6 +443,7 @@ func (x *execution) runInstance(ctx context.Context, inst engine.RemoteInstance)
 	res, err := x.e.Machine.Run(ctx, fmt.Sprintf("rc-r%d-%d", x.run.ID, n), dispatch.Job{
 		Command: "run-instance",
 		Input:   input,
+		Secrets: x.secrets,
 		Source: func(w io.Writer) error {
 			f, err := os.Open(x.sourceTar)
 			if err != nil {

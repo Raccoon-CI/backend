@@ -63,8 +63,15 @@ func TestTheAPIIsClosedWithoutTheRightToken(t *testing.T) {
 		}
 	}
 	a.Token = ""
-	if rec := get(a.Handler(), "/v1/runs", "Bearer "); rec.Code != http.StatusServiceUnavailable {
-		t.Errorf("with no token configured an empty token must not open the API: %d", rec.Code)
+	if rec := get(a.Handler(), "/v1/runs", "Bearer "); rec.Code != http.StatusUnauthorized {
+		t.Errorf("with no bootstrap token an empty token must not open the API: %d", rec.Code)
+	}
+	if rec := get(a.Handler(), "/v1/runs", "Bearer "+token); rec.Code != http.StatusUnauthorized {
+		t.Errorf("the bootstrap token works though none is configured: %d", rec.Code)
+	}
+	closed := &API{}
+	if rec := get(closed.Handler(), "/v1/runs", "Bearer anything"); rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("with no way to tell tokens the API is closed: %d", rec.Code)
 	}
 }
 

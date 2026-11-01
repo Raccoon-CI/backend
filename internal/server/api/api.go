@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"raccoonci/internal/server/intake"
+	"raccoonci/internal/server/secrets"
 	"raccoonci/internal/server/store"
 )
 
@@ -35,10 +37,22 @@ type API struct {
 	// Canceller stops a run that is running; nil means none can be stopped
 	// (a queued run can still be cancelled).
 	Canceller Canceller
-	// Token is the bearer token the /v1 routes need. Empty switches them off
-	// (503): the API is closed unless a token is configured.
+	// Secrets keeps the secrets and variables behind /v1/secrets and /v1/vars;
+	// nil switches those routes off.
+	Secrets SecretsAdmin
+	// Token is the bootstrap token: it has the admin role and is how the
+	// first tokens are made. Tokens made through the API live in Store. With
+	// neither, the API is closed (503).
 	Token   string
 	Version string
+}
+
+// SecretsAdmin is secrets.Service.
+type SecretsAdmin interface {
+	SetSecret(ctx context.Context, scope, name, value string) error
+	SetVar(ctx context.Context, scope, name, value string) error
+	Delete(ctx context.Context, scope, kind, name string) (bool, error)
+	List(ctx context.Context, scope, kind string) ([]secrets.Entry, error)
 }
 
 // Dispatcher creates runs on request (intake.Handler).
@@ -53,29 +67,47 @@ type Canceller interface {
 	Cancel(runID int64) bool
 }
 
+// access is what a route needs.
+type access int
+
+const (
+	open  access = iota // no token
+	read                // a token of the read or admin role
+	admin               // a token of the admin role: whatever changes something, and secrets
+)
+
 type route struct {
 	pattern string // "METHOD /path", as http.ServeMux takes it
 	handler http.HandlerFunc
-	open    bool // needs no token
+	access  access
 }
 
 // routes is every route of the API. A test checks that each one is in
 // openapi.yaml, so the file cannot drift from the code.
 func (a *API) routes() []route {
 	return []route{
-		{"GET /healthz", a.health, true},
+		{"GET /healthz", a.health, open},
 		{"GET /v1/openapi.yaml", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/yaml")
 			w.Write(openapiSpec)
-		}, true},
-		{"GET /v1/runs", a.listRuns, false},
-		{"POST /v1/runs", a.dispatchRun, false},
-		{"GET /v1/runs/{id}", a.getRun, false},
-		{"POST /v1/runs/{id}/cancel", a.cancelRun, false},
-		{"POST /v1/runs/{id}/rerun", a.rerunRun, false},
-		{"GET /v1/runs/{id}/jobs", a.listJobs, false},
-		{"GET /v1/runs/{id}/log", a.readLog, false},
-		{"GET /v1/events/{id}", a.getEvent, false},
+		}, open},
+		{"GET /v1/runs", a.listRuns, read},
+		{"POST /v1/runs", a.dispatchRun, admin},
+		{"GET /v1/runs/{id}", a.getRun, read},
+		{"POST /v1/runs/{id}/cancel", a.cancelRun, admin},
+		{"POST /v1/runs/{id}/rerun", a.rerunRun, admin},
+		{"GET /v1/runs/{id}/jobs", a.listJobs, read},
+		{"GET /v1/runs/{id}/log", a.readLog, read},
+		{"GET /v1/events/{id}", a.getEvent, read},
+		{"GET /v1/secrets", a.listSecrets(store.KindSecret), admin},
+		{"PUT /v1/secrets", a.putSecret(store.KindSecret), admin},
+		{"DELETE /v1/secrets", a.deleteSecret(store.KindSecret), admin},
+		{"GET /v1/vars", a.listSecrets(store.KindVar), admin},
+		{"PUT /v1/vars", a.putSecret(store.KindVar), admin},
+		{"DELETE /v1/vars", a.deleteSecret(store.KindVar), admin},
+		{"GET /v1/tokens", a.listTokens, admin},
+		{"POST /v1/tokens", a.createToken, admin},
+		{"DELETE /v1/tokens/{id}", a.revokeToken, admin},
 	}
 }
 
@@ -84,8 +116,8 @@ func (a *API) Handler() http.Handler {
 	mux := http.NewServeMux()
 	for _, r := range a.routes() {
 		h := r.handler
-		if !r.open {
-			h = a.auth(h)
+		if r.access != open {
+			h = a.auth(r.access, h)
 		}
 		mux.HandleFunc(r.pattern, h)
 	}
@@ -106,22 +138,54 @@ func (a *API) health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": a.Version})
 }
 
-// auth wraps a route with the bearer token check. Both sides are hashed first
-// so that the comparison takes the same time whatever the guess looks like.
-func (a *API) auth(next http.HandlerFunc) http.HandlerFunc {
+// HashToken is what is stored of an API token: the SHA-256, in hex.
+func HashToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
+// roleOf says which role a bearer token has: the bootstrap token is admin
+// (compared by hash, so it takes the same time whatever the guess), others are
+// looked up by hash among the tokens kept. "" means none.
+func (a *API) roleOf(ctx context.Context, given string) string {
+	if given == "" {
+		return ""
+	}
+	if a.Token != "" {
+		want, have := sha256.Sum256([]byte(a.Token)), sha256.Sum256([]byte(given))
+		if subtle.ConstantTimeCompare(want[:], have[:]) == 1 {
+			return store.RoleAdmin
+		}
+	}
+	if a.Store != nil {
+		if t, err := a.Store.LookupToken(ctx, HashToken(given)); err == nil {
+			return t.Role
+		}
+	}
+	return ""
+}
+
+// auth wraps a route with the bearer token check for the access it needs.
+func (a *API) auth(need access, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if a.Token == "" {
+		if a.Token == "" && a.Store == nil {
 			fail(w, http.StatusServiceUnavailable, "the API is closed: no API token is configured")
 			return
 		}
 		given, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		want, have := sha256.Sum256([]byte(a.Token)), sha256.Sum256([]byte(given))
-		if !ok || subtle.ConstantTimeCompare(want[:], have[:]) != 1 {
+		if !ok {
+			given = "" // a token without the scheme is not accepted
+		}
+		role := a.roleOf(r.Context(), given)
+		switch {
+		case role == "":
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			fail(w, http.StatusUnauthorized, "missing or wrong token")
-			return
+		case need == admin && role != store.RoleAdmin:
+			fail(w, http.StatusForbidden, "this needs a token of the admin role")
+		default:
+			next(w, r)
 		}
-		next(w, r)
 	}
 }
 

@@ -15,7 +15,9 @@ import (
 
 	"raccoonci/internal/dispatch"
 	"raccoonci/internal/runner"
+	"raccoonci/internal/server/secrets"
 	"raccoonci/internal/server/store"
+	"raccoonci/internal/server/vault"
 	"raccoonci/internal/value"
 	"raccoonci/internal/wire"
 )
@@ -476,6 +478,81 @@ func TestCancelEndsOneRunAndOnlyAnActiveOne(t *testing.T) {
 	}
 	if e.ex.Cancel(run.ID) || e.ex.Cancel(999) {
 		t.Fatal("Cancel said it stopped a run that is not running")
+	}
+}
+
+const withSecret = `on: push
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "${{ vars.REGION }}"
+        env:
+          TOKEN: ${{ secrets.DEPLOY_TOKEN }}
+`
+
+func secretsFor(t *testing.T, e *env) {
+	t.Helper()
+	v, err := vault.New(map[string][]byte{"1": bytes.Repeat([]byte{1}, 32)}, "1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := &secrets.Service{Store: e.st, Vault: v}
+	ctx := context.Background()
+	svc.SetSecret(ctx, secrets.Repo("acme/web"), "DEPLOY_TOKEN", "hunter2")
+	svc.SetSecret(ctx, secrets.Repo("acme/web"), "UNUSED", "not sent")
+	svc.SetVar(ctx, secrets.Org("acme"), "REGION", "eu")
+	e.ex.Secrets = svc
+}
+
+func TestARunSendsMachinesTheSecretsItNamesAndItsVariables(t *testing.T) {
+	e := newEnv(t)
+	secretsFor(t, e)
+	run := e.queue(t, "d", withSecret, nil)
+	e.start(t)
+	if done := e.wait(t, run.ID); done.Conclusion != "success" {
+		t.Fatalf("conclusion %q", done.Conclusion)
+	}
+	if len(e.m.calls) != 1 {
+		t.Fatalf("%d calls", len(e.m.calls))
+	}
+	c := e.m.calls[0]
+	if len(c.job.Secrets) != 1 || c.job.Secrets["DEPLOY_TOKEN"] != "hunter2" {
+		t.Fatalf("secrets sent = %v: only the one the workflow names", c.job.Secrets)
+	}
+	ctxv, _ := value.FromJSON(c.spec.Contexts)
+	vars, _ := ctxv.(value.Object).Get("vars")
+	if v, _ := vars.(value.Object).Get("REGION"); v != "eu" {
+		t.Fatalf("vars = %v", vars)
+	}
+	// The secret is in the assignment's secrets, not in the instance description.
+	if strings.Contains(string(c.job.Input), "hunter2") {
+		t.Fatal("a secret's value is in the instance's input")
+	}
+	for _, ev := range e.log(t, run.ID) {
+		if strings.Contains(ev.Text, "hunter2") {
+			t.Fatalf("a secret's value is in the log: %+v", ev)
+		}
+	}
+}
+
+func TestAForkRunGetsNoSecretsAndSaysSo(t *testing.T) {
+	e := newEnv(t)
+	secretsFor(t, e)
+	run := e.queue(t, "d", withSecret, func(r *store.Run) { r.Fork = true; r.Event = "pull_request"; r.PullRequest = 9 })
+	e.start(t)
+	e.wait(t, run.ID)
+	if len(e.m.calls) != 1 || len(e.m.calls[0].job.Secrets) != 0 {
+		t.Fatalf("a fork's run sent secrets: %v", e.m.calls[0].job.Secrets)
+	}
+	said := false
+	for _, ev := range e.log(t, run.ID) {
+		if ev.Kind == "notice" && strings.Contains(ev.Text, "no secrets") {
+			said = true
+		}
+	}
+	if !said {
+		t.Fatalf("the log does not say the run gets no secrets: %+v", e.log(t, run.ID))
 	}
 }
 

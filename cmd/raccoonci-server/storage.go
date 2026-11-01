@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -9,7 +10,44 @@ import (
 	"raccoonci/internal/blob"
 	"raccoonci/internal/server/config"
 	"raccoonci/internal/server/storagecheck"
+	"raccoonci/internal/server/vault"
 )
+
+// openVault makes the vault the secrets are sealed with, from the master key
+// (and the one from before a rotation). nil, with no error, when no master key
+// is given.
+func openVault(id, oldID string) (*vault.Vault, error) {
+	mk, err := config.Secret("RACCOONCI_MASTER_KEY")
+	if err != nil {
+		return nil, err
+	}
+	old, err := config.Secret("RACCOONCI_MASTER_KEY_OLD")
+	if err != nil {
+		return nil, err
+	}
+	if mk == "" {
+		if old != "" {
+			return nil, errors.New("RACCOONCI_MASTER_KEY_OLD is set without RACCOONCI_MASTER_KEY")
+		}
+		return nil, nil
+	}
+	key, err := vault.ParseKey(mk)
+	if err != nil {
+		return nil, fmt.Errorf("RACCOONCI_MASTER_KEY: %w", err)
+	}
+	keys := map[string][]byte{id: key}
+	if old != "" {
+		if oldID == "" || oldID == id {
+			return nil, errors.New("RACCOONCI_MASTER_KEY_OLD needs -master-key-old-id, different from -master-key-id")
+		}
+		oldKey, err := vault.ParseKey(old)
+		if err != nil {
+			return nil, fmt.Errorf("RACCOONCI_MASTER_KEY_OLD: %w", err)
+		}
+		keys[oldID] = oldKey
+	}
+	return vault.New(keys, id)
+}
 
 // storageConfig reads the bucket's settings; its key and secret come from the
 // environment or files like every secret.

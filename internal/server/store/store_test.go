@@ -189,6 +189,77 @@ func TestARerunRemembersWhatItRepeats(t *testing.T) {
 	}
 }
 
+func TestSecretsAreReplacedByNameAndKeepTheirCreationTime(t *testing.T) {
+	s, ctx := open(t), context.Background()
+	t0 := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
+	s.Now = func() time.Time { return t0 }
+	if err := s.PutSecret(ctx, Secret{Scope: "repo:acme/web", Name: "TOKEN", Kind: KindSecret, KeyID: "1", Value: []byte{1, 2, 3}}); err != nil {
+		t.Fatal(err)
+	}
+	s.Now = func() time.Time { return t0.Add(time.Hour) }
+	if err := s.PutSecret(ctx, Secret{Scope: "repo:acme/web", Name: "TOKEN", Kind: KindSecret, KeyID: "2", Value: []byte{9}}); err != nil {
+		t.Fatal(err)
+	}
+	s.PutSecret(ctx, Secret{Scope: "repo:acme/web", Name: "MODE", Kind: KindVar, Value: []byte("fast")})
+	s.PutSecret(ctx, Secret{Scope: "org:acme", Name: "TOKEN", Kind: KindSecret, KeyID: "1", Value: []byte{7}})
+	got, err := s.GetSecret(ctx, "repo:acme/web", "TOKEN")
+	if err != nil || got.KeyID != "2" || len(got.Value) != 1 || !got.CreatedAt.Equal(t0) || !got.UpdatedAt.Equal(t0.Add(time.Hour)) {
+		t.Fatalf("secret = %+v, %v", got, err)
+	}
+	list, _ := s.ListSecrets(ctx, "repo:acme/web")
+	if len(list) != 2 || list[0].Name != "MODE" || list[1].Name != "TOKEN" {
+		t.Fatalf("list = %+v: only that scope's, by name", list)
+	}
+	if ok, _ := s.DeleteSecret(ctx, "repo:acme/web", "MODE"); !ok {
+		t.Fatal("not deleted")
+	}
+	if ok, _ := s.DeleteSecret(ctx, "repo:acme/web", "MODE"); ok {
+		t.Fatal("deleted twice")
+	}
+	if _, err := s.GetSecret(ctx, "repo:acme/web", "MODE"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a deleted secret: %v", err)
+	}
+}
+
+func TestTokensAreFoundByHashUntilRevoked(t *testing.T) {
+	s, ctx := open(t), context.Background()
+	now := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
+	s.Now = func() time.Time { return now }
+	made, err := s.CreateToken(ctx, "ci bot", RoleRead, "aaa")
+	if err != nil || made.Role != RoleRead || made.Name != "ci bot" || !made.LastUsedAt.IsZero() {
+		t.Fatalf("made = %+v, %v", made, err)
+	}
+	if _, err := s.CreateToken(ctx, "again", RoleAdmin, "aaa"); err == nil {
+		t.Fatal("two tokens with one hash")
+	}
+	found, err := s.LookupToken(ctx, "aaa")
+	if err != nil || found.ID != made.ID || found.LastUsedAt.IsZero() {
+		t.Fatalf("found = %+v, %v", found, err)
+	}
+	if _, err := s.LookupToken(ctx, "bbb"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("an unknown token: %v", err)
+	}
+	now = now.Add(10 * time.Second) // within a minute of the last use: not written again
+	s.LookupToken(ctx, "aaa")
+	list, _ := s.ListTokens(ctx)
+	if len(list) != 1 || !list[0].LastUsedAt.Equal(time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)) {
+		t.Fatalf("list = %+v", list)
+	}
+	if ok, _ := s.RevokeToken(ctx, made.ID); !ok {
+		t.Fatal("not revoked")
+	}
+	if _, err := s.LookupToken(ctx, "aaa"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a revoked token still works: %v", err)
+	}
+	if ok, _ := s.RevokeToken(ctx, made.ID); ok {
+		t.Fatal("revoked twice")
+	}
+	list, _ = s.ListTokens(ctx)
+	if len(list) != 1 || list[0].RevokedAt.IsZero() {
+		t.Fatalf("a revoked token must stay in the list: %+v", list)
+	}
+}
+
 func TestOnlyOneOfConcurrentClaimersGetsARun(t *testing.T) {
 	s, ctx := open(t), context.Background()
 	newRun(t, s, "only")

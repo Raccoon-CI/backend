@@ -2,7 +2,7 @@
 
 [English](server-dev.md) — 两个版本要同步修改。
 
-状态：`docs/server-design.md` 的第 1、2 步。服务端接收 GitHub 的 `push` 和 `pull_request` 投递（或者一个手动启动 workflow 的请求），判断它们会触发哪些 workflow，为每个存一条排队中的 run，按提交取回仓库，把每个 job 实例放到一台机器上跑，存下日志，并通过 API 展示 run 和日志。会把每个 run 作为 commit status 回报给 GitHub，也能取消和重跑 run。还不保存密钥、不发 check run（那需要 GitHub App）、不做用户登录。
+状态：`docs/server-design.md` 的第 1、2 步。服务端接收 GitHub 的 `push` 和 `pull_request` 投递（或者一个手动启动 workflow 的请求），判断它们会触发哪些 workflow，为每个存一条排队中的 run，按提交取回仓库，把每个 job 实例放到一台机器上跑，存下日志，并通过 API 展示 run 和日志。会把每个 run 作为 commit status 回报给 GitHub，也能取消和重跑 run。保存密钥和变量（在数据库里加密），只把 run 用到的那几个交给它，API token 有角色。还不发 check run（那需要 GitHub App），也不做用 GitHub 登录。
 
 ## 构建和启动
 
@@ -25,7 +25,9 @@ raccoonci-server -allow owner/name [-allow owner/*] [-listen 127.0.0.1:18080] [-
 | 名字 | 含义 |
 |------|------|
 | `RACCOONCI_WEBHOOK_SECRET` | GitHub 投递的签名密钥（必需） |
-| `RACCOONCI_API_TOKEN` | `/v1` 的 bearer token（没设的话 API 返回 503） |
+| `RACCOONCI_API_TOKEN` | `/v1` 的引导 bearer token，admin 角色；别的 token 通过 API 创建 |
+| `RACCOONCI_MASTER_KEY` | 32 字节（`openssl rand -hex 32`），用来加密数据库里的密钥；不设的话密钥和变量功能关闭。丢了它就丢了所有密钥 |
+| `RACCOONCI_MASTER_KEY_OLD` | 配合 `-master-key-old-id`：轮换之前的旧主密钥，旧的密钥还能打开（新的用当前的 `-master-key-id` 加密） |
 | `RACCOONCI_GITHUB_APP_ID`、`RACCOONCI_GITHUB_APP_KEY_FILE` | 以 GitHub App 身份行事（用 App 私钥换 installation token） |
 | `RACCOONCI_GITHUB_TOKEN` | 不用 App，用一个 token，开发时配合仓库 webhook |
 | `INSTABOX_API_KEY` / `IBX_API_KEY` | InstaBox 密钥（第一个名字在 InstaBox 机器上是保留的） |
@@ -58,6 +60,25 @@ POST /v1/runs/{id}/cancel          # 排队中的 run 立刻结束；运行中�
 POST /v1/runs/{id}/rerun           # 新建一个和已结束的 run 一样的 run：同一提交、当时的 workflow 文件、同样的输入
 ```
 
+## 密钥、变量和 token
+
+下面都需要 admin 角色。scope 写成 `org:<名字>` 或 `repo:<owner>/<名字>`，全小写。
+
+```sh
+PUT    /v1/secrets   {"scope":"repo:acme/web","name":"DEPLOY_TOKEN","value":"…"}   # 加密保存；读不回来
+GET    /v1/secrets?scope=repo:acme/web                                              # 只有名字
+DELETE /v1/secrets?scope=repo:acme/web&name=DEPLOY_TOKEN
+PUT/GET/DELETE /v1/vars                                                             # 变量同理，但能读回来
+POST   /v1/tokens    {"name":"dashboard","role":"read"}                              # token 只在返回里出现一次
+GET    /v1/tokens    DELETE /v1/tokens/{id}                                          # 列出；吊销
+```
+
+- 密钥进数据库之前先加密（AES-256-GCM，主密钥加密，并绑定它的 scope 和名字），只在 run 要发给机器的那一刻才解开。它放在 job 的任务描述里经 https 发过去，runner 会把 step 打印的内容里的它打码。它不会出现在日志、API 的返回或错误信息里。
+- run 只拿到 workflow 里按字面写出的密钥（`secrets.NAME`、`secrets['NAME']`），同名时仓库的优先于组织的。通过拼出来的名字、或把整个 `secrets` 传下去才能读到的密钥不会发送。名字统一存成大写；不允许以 `GITHUB_` 开头。
+- 来自别的仓库（或 fork 已被删除）的 pull request 的 run **拿不到任何密钥**，日志里会写明。变量还是能拿到。
+- `read` token 能读 run、job、日志和事件；`admin` token 还能启动、取消、重跑 run，管理密钥、变量和 token。token 只保存哈希。
+- `secrets.GITHUB_TOKEN` 不是服务端生成的：这个名字的密钥是不允许的，所以它是空的。
+
 ## GitHub 上的状态
 
 run 会在它所跑的提交上设置 commit status `raccoonci / <workflow 名>`：开始时 `pending`（"Running"），之后是 `success`、`failure` 或 `error`（"Cancelled"），带上耗时。它显示在提交上，pull request 的 checks 里也能看到。用普通 token（需要 `repo:status` 能力）或 GitHub App（需要 "Commit statuses" 权限）都行；`-status=false` 关闭。报告失败只记日志，不会让 run 失败。check run（每个 job 一行、带注解和摘要）只有 GitHub App 能写，还没做。
@@ -79,7 +100,7 @@ run 会在它所跑的提交上设置 commit status `raccoonci / <workflow 名>`
 
 - 提交是事件所指的那个；pull request 用的是它的**头提交**，不是 GitHub 会用的合并提交。
 - 源码来自 GitHub 对该提交的归档：没有 `.git` 目录，没有历史。
-- 没有密钥，所以 `secrets.GITHUB_TOKEN` 是空的。artifact 可用，但元数据在内存里，重启就忘（数据还在存储里）。cache 可用（见下一节）。
+- `secrets.GITHUB_TOKEN` 是空的。artifact 可用，但元数据在内存里，重启就忘（数据还在存储里）。cache 可用（见下一节）。
 - `github.run_number` 就是 run 的 id。
 
 ## 目前验证过的
@@ -91,4 +112,5 @@ run 会在它所跑的提交上设置 commit status `raccoonci / <workflow 名>`
 - **GitHub 自己发出的投递**（`bench-lint-docs` 上的仓库 webhook，经隧道）：ping 回 200；两次 push，以及一个 pull request 的打开和关闭，都带着签名到达，回 202，用真实 API 读了该提交上的 workflow，并记为已忽略（仓库里唯一的 workflow 只监听 `workflow_dispatch`）。token 没有 `workflow` 权限，没法加一个由 push 触发的 workflow，所以还没看到由真实投递建出来的 run。
 - **InstaBox 上的状态、取消、重跑：** run 的提交在 GitHub 上先 `pending` 后 `success`（"Succeeded in 27s"）；5 秒时取消的 run 记为 cancelled，状态是 `error`；重跑重复了第一次（`rerun_of`）并成功。取消的那次暴露了一个泄漏：机器还在创建，删除被拒绝（409 `operation_conflict`）后就放弃了，机器一直跑到 2 小时的期限。现在 `instabox.Client.DeleteMachine` 会等待后重试；真机验证过（创建中取消后没有残留机器）。
 - **真实 job 里的缓存，在 InstaBox 机器上**（`bench-go-integration`，`setup-go` 带 `cache: true`，还有一个 postgres 服务容器）：第一次没找到缓存，经服务端保存了 44 MB；重跑时恢复成功（"Cache restored from key …"、"Cache hit occurred on the primary key"）；在新分支上的 run 也恢复成功，走的是默认分支的空间；磁盘上只有默认分支的那一个空间；结束后没有残留机器。隔离规则有用多个 run 做的测试（功能分支、pull request 的 ref、另一个仓库、重启），去掉隔离后这些测试会失败。
+- **密钥：** 经隧道存了一个密钥和一个变量并列出（密钥只列名字），`read` token 读 run 得到 200、读密钥得到 403，被吊销的 token 立刻失效。用真正的 runner（`RACCOONCI_TEST_BIN=dist/raccoonci go test ./internal/server/execute -run Real`）：step 对密钥打印出 `token=[***]`，对变量打印出 `region=[eu]`，密钥的值在日志里任何地方都没有出现，fork 的 run 打印的 token 是空的。没在真实的、由 GitHub 触发且用到密钥的 workflow 上跑过（手头的 token 加不了 workflow 文件）。
 - **没试过：** 桶（没有给开发用 R2 桶的访问密钥，所以 artifact 和缓存走 S3 的路径以及桶的检查只用假的测过）、真实 job 上传 artifact、由 GitHub 发出的投递建出的 run、真实的 pull request、App 对真实 GitHub 的认证、真实 job 里的 artifact、带 matrix 的 run。

@@ -29,6 +29,7 @@ import (
 	"raccoonci/internal/server/execute"
 	"raccoonci/internal/server/github"
 	"raccoonci/internal/server/intake"
+	"raccoonci/internal/server/secrets"
 	"raccoonci/internal/server/store"
 )
 
@@ -75,6 +76,8 @@ func run(args []string) error {
 	s3Region := fs.String("storage-s3-region", "", "the bucket's region (R2: auto; default us-east-1)")
 	s3Prefix := fs.String("storage-s3-prefix", "", "a prefix for every key in the bucket, to share it with something else")
 	s3PathStyle := fs.Bool("storage-s3-path-style", false, "address the bucket as host/bucket/key (most self-hosted stores need it)")
+	masterKeyID := fs.String("master-key-id", "1", "the id of RACCOONCI_MASTER_KEY, written beside every secret it seals")
+	masterKeyOldID := fs.String("master-key-old-id", "", "the id of RACCOONCI_MASTER_KEY_OLD, the key that sealed secrets before a rotation (they are opened with it, new ones sealed with the current key)")
 	cacheLimitGB := fs.Int("cache-limit-gb", 5, "how much one cache space (the default branch, or one other ref) may hold, in GB; the least recently used go first")
 	var allow listFlag
 	fs.Var(&allow, "allow", "a repository the server works for, owner/name or owner/* (repeatable; at least one)")
@@ -87,7 +90,9 @@ Secrets are read from the environment, or from the file named by NAME_FILE (mode
   RACCOONCI_GITHUB_APP_ID        with RACCOONCI_GITHUB_APP_KEY_FILE (the App's private key, mode 600): act as a GitHub App
   RACCOONCI_GITHUB_TOKEN         instead of an App, one token (development, with a repository webhook)
   INSTABOX_API_KEY (or IBX_API_KEY)  the InstaBox key machines are made with (with -public-url and -snapshot: run jobs)
-  RACCOONCI_STORAGE_S3_KEY, RACCOONCI_STORAGE_S3_SECRET  the bucket's access key (with -storage-s3-bucket)`)
+  RACCOONCI_STORAGE_S3_KEY, RACCOONCI_STORAGE_S3_SECRET  the bucket's access key (with -storage-s3-bucket)
+  RACCOONCI_MASTER_KEY           32 bytes (64 hex digits or base64; openssl rand -hex 32) that seal the secrets in the database; without it secrets are off
+  RACCOONCI_MASTER_KEY_OLD       the key from before a rotation (with -master-key-old-id)`)
 		fs.PrintDefaults()
 	}
 	fs.Parse(args)
@@ -139,6 +144,17 @@ Secrets are read from the environment, or from the file named by NAME_FILE (mode
 	mux.Handle("/webhooks/github", hook)
 	apiSvc := &api.API{Store: st, Dispatcher: hook, Token: apiToken, Version: version}
 	mux.Handle("/", apiSvc.Handler())
+	// Secrets need a master key; without one they are off (the routes answer
+	// 503 and no run gets a secret), and nothing is ever stored in the clear.
+	var secretsSvc *secrets.Service
+	if v, err := openVault(*masterKeyID, *masterKeyOldID); err != nil {
+		return err
+	} else if v != nil {
+		secretsSvc = &secrets.Service{Store: st, Vault: v}
+		apiSvc.Secrets = secretsSvc
+	} else {
+		log.Warn("no master key (RACCOONCI_MASTER_KEY): secrets and variables are off")
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -216,6 +232,9 @@ Secrets are read from the environment, or from the file named by NAME_FILE (mode
 			WorkDir: filepath.Join(*dataDir, "work"), Log: log}
 		if *status {
 			ex.Reporter = execute.Statuses{GH: gh}
+		}
+		if secretsSvc != nil {
+			ex.Secrets = secretsSvc
 		}
 		hook.Notify = ex.Wake
 		apiSvc.Canceller = ex

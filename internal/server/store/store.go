@@ -93,6 +93,40 @@ type LogLine struct {
 	Data string
 }
 
+// Secret kinds.
+const (
+	KindSecret = "secret"
+	KindVar    = "var"
+)
+
+// Secret is a secret or a variable of a scope ("org:acme", "repo:acme/web").
+// Value is sealed for a secret (internal/server/vault) and plain for a variable.
+type Secret struct {
+	Scope     string
+	Name      string
+	Kind      string
+	KeyID     string
+	Value     []byte
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// Token roles.
+const (
+	RoleRead  = "read"
+	RoleAdmin = "admin"
+)
+
+// APIToken describes a token for the API; the token itself is never stored.
+type APIToken struct {
+	ID         int64
+	Name       string
+	Role       string
+	CreatedAt  time.Time
+	LastUsedAt time.Time // zero until used
+	RevokedAt  time.Time // zero while it works
+}
+
 // RunFilter selects runs, newest first.
 type RunFilter struct {
 	Repo   string // empty: any
@@ -140,6 +174,23 @@ type Store interface {
 	AppendLog(ctx context.Context, runID int64, lines []LogLine) error
 	// ReadLog returns up to limit lines of a run's log with an id above after.
 	ReadLog(ctx context.Context, runID, after int64, limit int) ([]LogLine, error)
+
+	// PutSecret makes or replaces a secret or variable (the creation time of
+	// an existing one stays).
+	PutSecret(ctx context.Context, s Secret) error
+	GetSecret(ctx context.Context, scope, name string) (Secret, error)
+	// ListSecrets lists the secrets and variables of a scope, by name.
+	ListSecrets(ctx context.Context, scope string) ([]Secret, error)
+	// DeleteSecret reports whether there was one to delete.
+	DeleteSecret(ctx context.Context, scope, name string) (bool, error)
+
+	// CreateToken records a token by the SHA-256 (hex) of its value.
+	CreateToken(ctx context.Context, name, role, hash string) (APIToken, error)
+	// LookupToken finds a token that has not been revoked and notes its use.
+	LookupToken(ctx context.Context, hash string) (APIToken, error)
+	ListTokens(ctx context.Context) ([]APIToken, error)
+	// RevokeToken reports whether there was a working token with that id.
+	RevokeToken(ctx context.Context, id int64) (bool, error)
 
 	Close() error
 }
