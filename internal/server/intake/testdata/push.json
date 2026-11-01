@@ -1,0 +1,17 @@
+{
+  "ref": "refs/heads/main",
+  "before": "1111111111111111111111111111111111111111",
+  "after": "2222222222222222222222222222222222222222",
+  "created": false,
+  "deleted": false,
+  "forced": false,
+  "repository": {
+    "full_name": "acme/web",
+    "private": true,
+    "default_branch": "main"
+  },
+  "pusher": {"name": "alice"},
+  "sender": {"login": "alice"},
+  "installation": {"id": 42},
+  "head_commit": {"id": "2222222222222222222222222222222222222222", "message": "Fix the build"}
+}

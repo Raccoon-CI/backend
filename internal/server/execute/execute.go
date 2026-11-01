@@ -1,0 +1,511 @@
+// Package execute runs the queued runs of the server: for each it fetches the
+// repository at the run's commit, resolves the workflow's jobs with the
+// engine, and sends every job instance to a machine of the compute provider
+// (internal/dispatch protocol, `raccoonci run-instance` on the machine).
+// Events come back over the internal/wire protocol and are stored as the run's
+// log.
+//
+// The engine runs in this process, one goroutine graph per run, as `raccoonci
+// run -on instabox` does. A run in progress when the server stops is ended as
+// failed at the next start (Executor.Run); resuming it is a later step.
+package execute
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"raccoonci/internal/catalog"
+	"raccoonci/internal/dispatch"
+	"raccoonci/internal/engine"
+	"raccoonci/internal/runner"
+	"raccoonci/internal/runnerimages"
+	"raccoonci/internal/server/github"
+	"raccoonci/internal/server/store"
+	"raccoonci/internal/value"
+	"raccoonci/internal/wire"
+	"raccoonci/internal/workflow"
+)
+
+// Machine runs one dispatch.Job on a machine of the compute provider and
+// waits for it to end. instabox.Provider is the real one (see Instabox).
+type Machine interface {
+	Run(ctx context.Context, name string, job dispatch.Job) (dispatch.Result, error)
+}
+
+// Source writes a repository at a commit as a .tar.gz with the files at its
+// root (github.Client.SourceTar).
+type Source interface {
+	SourceTar(ctx context.Context, installationID int64, repo, sha string, w io.Writer) error
+}
+
+// Services gives the environment a job's steps need to reach the artifact
+// service as one job of one run (artifacts.Service). It may be nil.
+type Services interface {
+	JobEnv(run int64, job string) (map[string]string, error)
+}
+
+// Executor takes queued runs and runs them.
+type Executor struct {
+	Store    store.Store
+	Source   Source
+	Machine  Machine
+	Services Services
+	// WorkDir holds the source archive of each run while it runs.
+	WorkDir string
+	// MaxRuns is how many runs go at once (default 4); MaxParallel how many
+	// job instances of one run (default 8).
+	MaxRuns     int
+	MaxParallel int
+	// Install is what machines may install for a job (`raccoonci run -install`):
+	// "all" (default) also installs apt packages, which is fine on machines
+	// that exist for one job.
+	Install string
+	// Poll is how often the queue is looked at when nobody calls Wake.
+	Poll time.Duration
+	// Reporter, if set, is told when a run starts and how it ended.
+	Reporter Reporter
+	Log      *slog.Logger
+
+	wake    chan struct{}
+	once    sync.Once
+	wg      sync.WaitGroup
+	mu      sync.Mutex
+	cancels map[int64]context.CancelFunc
+}
+
+func (e *Executor) log() *slog.Logger {
+	if e.Log != nil {
+		return e.Log
+	}
+	return slog.New(slog.DiscardHandler)
+}
+
+func (e *Executor) init() {
+	e.once.Do(func() { e.wake = make(chan struct{}, 1) })
+}
+
+// Wake tells the executor a run may have been queued.
+func (e *Executor) Wake() {
+	e.init()
+	select {
+	case e.wake <- struct{}{}:
+	default:
+	}
+}
+
+// Run takes queued runs until ctx ends, then waits for the runs it started to
+// finish (they are cancelled by ctx). It first ends the runs a stopped server
+// left in progress.
+func (e *Executor) Run(ctx context.Context) error {
+	e.init()
+	if n, err := e.Store.InterruptRuns(ctx, string(runner.Failure)); err != nil {
+		return fmt.Errorf("ending the runs left from before: %w", err)
+	} else if n > 0 {
+		e.log().Warn("runs were in progress when the server stopped; ended as failed", "runs", n)
+	}
+	maxRuns := e.MaxRuns
+	if maxRuns < 1 {
+		maxRuns = 4
+	}
+	poll := e.Poll
+	if poll <= 0 {
+		poll = 2 * time.Second
+	}
+	slots := make(chan struct{}, maxRuns)
+	for {
+		for ctx.Err() == nil {
+			select {
+			case slots <- struct{}{}:
+			default:
+				goto wait // all slots busy
+			}
+			run, ok, err := e.Store.ClaimRun(ctx)
+			if err != nil || !ok {
+				<-slots
+				if err != nil && ctx.Err() == nil {
+					e.log().Error("looking for a queued run failed", "err", err)
+				}
+				break
+			}
+			e.wg.Add(1)
+			go func() {
+				defer e.wg.Done()
+				defer func() { <-slots }()
+				e.execute(ctx, run)
+			}()
+		}
+	wait:
+		select {
+		case <-ctx.Done():
+			e.wg.Wait()
+			return nil
+		case <-e.wake:
+		case <-time.After(poll):
+		}
+	}
+}
+
+// execute runs one claimed run and records how it ended.
+func (e *Executor) execute(parent context.Context, run store.Run) {
+	log := e.log().With("run", run.ID, "repo", run.Repo, "workflow", run.WorkflowPath)
+	sink := newSink(e.Store, run.ID, log)
+	ctx, cancel := context.WithCancel(parent) // Cancel ends this run alone; stopping the server ends all
+	defer cancel()
+	e.register(run.ID, cancel)
+	defer e.unregister(run.ID)
+	began := time.Now()
+	conclusion := runner.Failure
+	var installation int64
+	if ev, err := e.Store.GetEvent(ctx, run.EventID); err == nil {
+		installation = ev.InstallationID
+	}
+	pending := e.report(run, installation, github.StatePending, "Running", nil)
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("a run panicked", "panic", fmt.Sprint(r))
+			sink.Add(runner.Event{Kind: runner.Error, Time: time.Now(), Text: fmt.Sprintf("the server failed while running this: %v", r)})
+			conclusion = runner.Failure
+		}
+		sink.Close()
+		if err := e.Store.FinishRun(context.Background(), run.ID, string(conclusion)); err != nil {
+			log.Error("recording the end of a run failed", "err", err)
+		}
+		state, desc := github.StateFailure, "Failed"
+		took := time.Since(began).Round(time.Second)
+		switch conclusion {
+		case runner.Success:
+			state, desc = github.StateSuccess, fmt.Sprintf("Succeeded in %v", took)
+		case runner.Cancelled:
+			state, desc = github.StateError, "Cancelled"
+		default:
+			desc = fmt.Sprintf("Failed after %v", took)
+		}
+		<-e.report(run, installation, state, desc, pending)
+		log.Info("run ended", "conclusion", conclusion)
+	}()
+	log.Info("run started")
+
+	x, err := e.prepare(ctx, run, sink)
+	if err != nil {
+		sink.Add(runner.Event{Kind: runner.Error, Time: time.Now(), Text: err.Error()})
+		if ctx.Err() != nil {
+			conclusion = runner.Cancelled
+		}
+		return
+	}
+	defer os.RemoveAll(x.dir)
+
+	res, err := engine.Run(ctx, x.w, engine.Options{
+		Remote:      x.runInstance,
+		Github:      x.github,
+		Vars:        value.Object{},
+		Inputs:      x.inputs,
+		Images:      x.images,
+		Catalog:     catalog.Default(),
+		WorkDir:     x.dir,
+		MaxParallel: x.maxParallel,
+		Runner:      runner.Config{OnEvent: sink.Add},
+	})
+	switch {
+	case err != nil:
+		sink.Add(runner.Event{Kind: runner.Error, Time: time.Now(), Text: err.Error()})
+	case ctx.Err() != nil:
+		conclusion = runner.Cancelled
+	default:
+		conclusion = res.Conclusion
+	}
+}
+
+// Reporter tells GitHub how a run is going (a commit status, or a check run).
+type Reporter interface {
+	Report(ctx context.Context, installationID int64, run store.Run, state, description string) error
+}
+
+// report sends a state to GitHub in the background, after the report it
+// follows (after, may be nil) has been sent, so a slow "pending" cannot
+// overwrite the end. A failure is logged, never fatal: GitHub being
+// unreachable must not fail a run. The channel closes when it is sent.
+func (e *Executor) report(run store.Run, installation int64, state, desc string, after <-chan struct{}) <-chan struct{} {
+	done := make(chan struct{})
+	if e.Reporter == nil {
+		close(done)
+		return done
+	}
+	go func() {
+		defer close(done)
+		if after != nil {
+			<-after
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		if err := e.Reporter.Report(ctx, installation, run, state, desc); err != nil {
+			e.log().Warn("reporting to GitHub failed", "run", run.ID, "state", state, "err", err)
+		}
+	}()
+	return done
+}
+
+func (e *Executor) register(id int64, cancel context.CancelFunc) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.cancels == nil {
+		e.cancels = map[int64]context.CancelFunc{}
+	}
+	e.cancels[id] = cancel
+}
+
+func (e *Executor) unregister(id int64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	delete(e.cancels, id)
+}
+
+// Cancel stops a run this executor is running; false when it is not running one with that id.
+func (e *Executor) Cancel(id int64) bool {
+	e.mu.Lock()
+	cancel, ok := e.cancels[id]
+	e.mu.Unlock()
+	if ok {
+		cancel()
+	}
+	return ok
+}
+
+// execution is one run being run.
+type execution struct {
+	e           *Executor
+	run         store.Run
+	log         *slog.Logger
+	sink        *sink
+	w           *workflow.Workflow
+	github      value.Object
+	inputs      value.Object
+	images      *runnerimages.Snapshot
+	dir         string
+	sourceTar   string
+	maxParallel int
+	n           atomic.Int32
+}
+
+func (e *Executor) prepare(ctx context.Context, run store.Run, sink *sink) (*execution, error) {
+	w, err := workflow.Parse([]byte(run.WorkflowText))
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", run.WorkflowPath, err)
+	}
+	ev, err := e.Store.GetEvent(ctx, run.EventID)
+	if err != nil {
+		return nil, fmt.Errorf("reading the event of the run: %w", err)
+	}
+	inputs, err := parseObject(run.Inputs)
+	if err != nil {
+		return nil, fmt.Errorf("the run's inputs: %w", err)
+	}
+	payload, err := parseObject(string(ev.Payload))
+	if err != nil {
+		return nil, fmt.Errorf("the event's payload: %w", err)
+	}
+	images, err := runnerimages.Embedded()
+	if err != nil {
+		return nil, err
+	}
+	dir := filepath.Join(e.WorkDir, fmt.Sprintf("run-%d", run.ID))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	x := &execution{e: e, run: run, log: e.log().With("run", run.ID), sink: sink, w: w, inputs: inputs, images: images, dir: dir,
+		github: githubContext(run, payload), maxParallel: e.MaxParallel}
+	if x.maxParallel < 1 {
+		x.maxParallel = 8
+	}
+	x.sourceTar = filepath.Join(dir, "_source.tar.gz")
+	f, err := os.Create(x.sourceTar)
+	if err != nil {
+		os.RemoveAll(dir)
+		return nil, err
+	}
+	err = e.Source.SourceTar(ctx, ev.InstallationID, run.Repo, run.SHA, f)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		os.RemoveAll(dir)
+		return nil, fmt.Errorf("fetching %s at %s: %w", run.Repo, run.SHA, err)
+	}
+	return x, nil
+}
+
+func parseObject(s string) (value.Object, error) {
+	if strings.TrimSpace(s) == "" {
+		return value.Object{}, nil
+	}
+	v, err := value.FromJSON([]byte(s))
+	if err != nil {
+		return nil, err
+	}
+	o, _ := v.(value.Object)
+	if o == nil {
+		o = value.Object{}
+	}
+	return o, nil
+}
+
+// runInstance is engine.Options.Remote: it sends one job instance to a
+// machine, stores what the machine says, and returns how it ended.
+func (x *execution) runInstance(ctx context.Context, inst engine.RemoteInstance) (runner.Result, error) {
+	job, err := x.e.Store.StartJob(ctx, x.run.ID, inst.Name)
+	if err != nil {
+		return runner.Result{}, err
+	}
+	conclusion := runner.Failure
+	defer func() {
+		if err := x.e.Store.FinishJob(context.Background(), job.ID, string(conclusion)); err != nil {
+			x.log.Error("recording the end of a job failed", "job", inst.Name, "err", err)
+		}
+	}()
+
+	contexts, err := json.Marshal(value.Object{
+		{Key: "github", Value: x.github},
+		{Key: "matrix", Value: orEmpty(inst.Matrix)},
+		{Key: "strategy", Value: orEmpty(inst.Strategy)},
+		{Key: "needs", Value: orEmpty(inst.Needs)},
+		{Key: "inputs", Value: orEmpty(x.inputs)},
+		{Key: "vars", Value: value.Object{}},
+	})
+	if err != nil {
+		return runner.Result{}, err
+	}
+	n := x.n.Add(1)
+	// The service token's job id is unique per instance (a matrix has many
+	// with one job id) and holds only what a token may.
+	var svcEnv map[string]string
+	if x.e.Services != nil {
+		if svcEnv, err = x.e.Services.JobEnv(x.run.ID, fmt.Sprintf("%s-%d", inst.Job.ID, n)); err != nil {
+			return runner.Result{}, err
+		}
+	}
+	install := x.e.Install
+	if install == "" {
+		install = "all"
+	}
+	input, err := json.Marshal(wire.InstanceSpec{Workflow: x.run.WorkflowPath, Job: inst.Job.ID, Contexts: contexts, ServiceEnv: svcEnv, Install: install})
+	if err != nil {
+		return runner.Result{}, err
+	}
+	reader := &wire.Reader{Name: inst.Name, Event: x.sink.Add}
+	defer reader.Flush()
+	res, err := x.e.Machine.Run(ctx, fmt.Sprintf("rc-r%d-%d", x.run.ID, n), dispatch.Job{
+		Command: "run-instance",
+		Input:   input,
+		Source: func(w io.Writer) error {
+			f, err := os.Open(x.sourceTar)
+			if err != nil {
+				return err
+			}
+			defer f.Close()
+			_, err = io.Copy(w, f)
+			return err
+		},
+		Log: reader,
+	})
+	if err != nil {
+		return runner.Result{}, err
+	}
+	if res.Error != "" {
+		return runner.Result{}, errors.New("the machine could not run the job: " + res.Error)
+	}
+	reader.Flush()
+	out, ok, err := reader.Result()
+	switch {
+	case err != nil:
+		return runner.Result{}, fmt.Errorf("the machine's result: %w", err)
+	case !ok:
+		return runner.Result{}, fmt.Errorf("the machine exited with status %d without a result (its output is in the log)", res.ExitCode)
+	}
+	conclusion = out.Conclusion
+	return out, nil
+}
+
+func orEmpty(o value.Object) value.Object {
+	if o == nil {
+		return value.Object{}
+	}
+	return o
+}
+
+// githubContext builds the github context of a run from what is stored. The
+// commit is the one the event is about: for a pull request its head (GitHub
+// itself gives the merge commit; the server does not make one yet).
+func githubContext(run store.Run, payload value.Object) value.Object {
+	owner, _, _ := strings.Cut(run.Repo, "/")
+	refType, refName := "branch", run.Ref
+	switch {
+	case strings.HasPrefix(run.Ref, "refs/heads/"):
+		refName = strings.TrimPrefix(run.Ref, "refs/heads/")
+	case strings.HasPrefix(run.Ref, "refs/tags/"):
+		refType, refName = "tag", strings.TrimPrefix(run.Ref, "refs/tags/")
+	case strings.HasPrefix(run.Ref, "refs/pull/"):
+		refName = strings.TrimPrefix(run.Ref, "refs/pull/")
+	}
+	var headRef, baseRef string
+	if run.PullRequest > 0 {
+		headRef, baseRef = dig(payload, "pull_request", "head", "ref"), dig(payload, "pull_request", "base", "ref")
+	}
+	id := strconv.FormatInt(run.ID, 10)
+	name := run.WorkflowName
+	if name == "" {
+		name = run.WorkflowPath
+	}
+	return value.Object{
+		{Key: "event_name", Value: run.Event},
+		{Key: "event", Value: payload},
+		{Key: "sha", Value: run.SHA},
+		{Key: "ref", Value: run.Ref},
+		{Key: "ref_name", Value: refName},
+		{Key: "ref_type", Value: refType},
+		{Key: "ref_protected", Value: "false"},
+		{Key: "head_ref", Value: headRef},
+		{Key: "base_ref", Value: baseRef},
+		{Key: "repository", Value: run.Repo},
+		{Key: "repository_owner", Value: owner},
+		{Key: "actor", Value: run.Actor},
+		{Key: "triggering_actor", Value: run.Actor},
+		{Key: "workflow", Value: name},
+		{Key: "workflow_ref", Value: run.Repo + "/" + run.WorkflowPath + "@" + run.Ref},
+		{Key: "workflow_sha", Value: run.SHA},
+		{Key: "run_id", Value: id},
+		{Key: "run_number", Value: id},
+		{Key: "run_attempt", Value: "1"},
+		{Key: "retention_days", Value: "90"},
+		{Key: "server_url", Value: "https://github.com"},
+		{Key: "api_url", Value: "https://api.github.com"},
+		{Key: "graphql_url", Value: "https://api.github.com/graphql"},
+	}
+}
+
+// dig reads a string at a path of object keys, "" when it is not there.
+func dig(o value.Object, path ...string) string {
+	var cur any = o
+	for _, p := range path {
+		obj, ok := cur.(value.Object)
+		if !ok {
+			return ""
+		}
+		cur, ok = obj.Get(p)
+		if !ok {
+			return ""
+		}
+	}
+	s, _ := cur.(string)
+	return s
+}

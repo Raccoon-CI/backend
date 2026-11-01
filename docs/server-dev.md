@@ -1,0 +1,82 @@
+# Running the server while developing
+
+[中文版](server-dev.zh.md) — keep the two in step.
+
+State: steps 1 and 2 of `docs/server-design.md`. The server receives GitHub's `push` and `pull_request` deliveries (or a request to start a workflow by hand), decides which workflows they start, stores a queued run for each, fetches the repository at the commit, runs every job instance on a machine, stores the log, and shows runs and logs through the API. It reports each run back to GitHub as a commit status, and can cancel and repeat runs. It does not yet keep secrets, send check runs (those need a GitHub App) or log users in.
+
+## Build and start
+
+```sh
+make build                       # dist/raccoonci and dist/raccoonci-server
+raccoonci-server -allow owner/name [-allow owner/*] [-listen 127.0.0.1:18080] [-data-dir DIR] [how to run jobs]
+```
+
+At least one `-allow` is needed: a delivery or request for any other repository is refused or forgotten. The database is `DIR/server.db` (SQLite, migrated at start). Deliveries a restart interrupted are handled again at start; runs that were in progress are ended as failed.
+
+**How to run jobs** (without one of these, runs stay queued):
+
+- InstaBox: `-public-url https://…` (where machines reach the server), `-snapshot ID` (the runner snapshot; env `RACCOONCI_INSTABOX_SNAPSHOT`) and the InstaBox key in `INSTABOX_API_KEY` or `IBX_API_KEY`. Each job instance gets a machine of its own; the machine's agent calls back at `<public-url>/agent`.
+- `-local-runner PATH-TO-raccoonci`: jobs run **on the machine the server runs on, as the same user, with no isolation**. For development, or a machine that exists for this, with code you trust. Jobs reach the server at the listen address, so it must be a loopback one unless `-public-url` is given.
+
+## Secrets
+
+Each is an environment variable `NAME`, or `NAME_FILE` naming a file that only you can read (mode 600; a looser file is refused). They are never flags.
+
+| Name | Meaning |
+|------|---------|
+| `RACCOONCI_WEBHOOK_SECRET` | signs GitHub's deliveries (required) |
+| `RACCOONCI_API_TOKEN` | bearer token for `/v1` (without it the API answers 503) |
+| `RACCOONCI_GITHUB_APP_ID`, `RACCOONCI_GITHUB_APP_KEY_FILE` | act as a GitHub App (installation tokens from the App's private key) |
+| `RACCOONCI_GITHUB_TOKEN` | instead of an App: one token, for development with a repository webhook |
+| `INSTABOX_API_KEY` / `IBX_API_KEY` | the InstaBox key (the first name is reserved on InstaBox machines) |
+
+## Telling GitHub
+
+A repository webhook (development) or the GitHub App (the real thing) points at `https://<your host>/webhooks/github`, content type `application/json`, secret = `RACCOONCI_WEBHOOK_SECRET`, events `push` and `pull_request`. While developing on a sandbox with no public address, the address is a Cloudflare Tunnel to `127.0.0.1:18080`.
+
+## Starting a run
+
+Without a webhook, ask the API (the workflow needs a `workflow_dispatch` trigger):
+
+```sh
+curl -H "Authorization: Bearer $TOKEN" -X POST https://HOST/v1/runs \
+  -d '{"repo":"owner/name","ref":"main","workflow":".github/workflows/ci.yml","inputs":{}}'
+```
+
+or replay a recorded delivery, signed as GitHub does (`RACCOONCI_WEBHOOK_SECRET_FILE=… raccoonci-server replay -url … -delivery d1 payload.json`; the same `-delivery` again must answer `duplicate`).
+
+## Reading the result
+
+```sh
+GET /v1/runs                       # newest first
+GET /v1/runs/{id}                  # with the workflow file it started from
+GET /v1/runs/{id}/jobs             # the job instances and how each ended
+GET /v1/runs/{id}/log?after=N      # the log, a page at a time ("done" says when it is over)
+GET /v1/runs/{id}/log              # with Accept: text/event-stream: the log as it grows, then an "end" event
+GET /v1/events/{id}                # a delivery and what was decided for each workflow file
+POST /v1/runs/{id}/cancel          # a queued run ends at once; a running one is told to stop (and its machine is deleted)
+POST /v1/runs/{id}/rerun           # a new run like a finished one: same commit, same workflow file as it was, same inputs
+```
+
+## Status on GitHub
+
+A run sets the commit status `raccoonci / <workflow name>` on the commit it ran: `pending` ("Running") when it starts, then `success`, `failure` or `error` ("Cancelled") with how long it took. It shows on the commit and, for a pull request, in its checks. It works with a plain token (needs the `repo:status` ability) and with a GitHub App (needs the "Commit statuses" permission); `-status=false` turns it off. A failed report is logged and never fails the run. Check runs, one line per job with annotations and a summary, can only be written by a GitHub App and are not done.
+
+`/v1/openapi.yaml` describes all of it; a test keeps it in step with the routes.
+
+## What a run is, for now
+
+- The commit is the one the event is about; for a pull request that is its **head**, not the merge commit GitHub would use.
+- The source comes from GitHub's archive of the commit: no `.git` directory, no history.
+- No secrets, so `secrets.GITHUB_TOKEN` is empty. No cache service (jobs run as when it is missing); artifacts work, kept in memory-backed metadata, so a restart forgets them.
+- `github.run_number` is the run id.
+
+## Checked so far
+
+- Unit tests (`-race`): signature, redelivery, allow list, activity types, forks, filters, recovery after a restart; the store; the executor with a fake machine (outputs flow between jobs, a failing job stops what needs it, machine errors, cancellation on shutdown, the run limit); the source archive repack through the real extractor; the API, including the SSE stream and a test that the spec and the routes agree.
+- A signed replay of a real push of `cli/cli` through a Cloudflare Tunnel with the real GitHub API: 15 workflow files read, 3 runs created, the same three GitHub ran for that commit.
+- **A whole run, end to end** (`-local-runner`): `POST /v1/runs` through the tunnel for `bench-lint-docs`' workflow; the server fetched the real archive from GitHub, resolved the job, ran it with the real `raccoonci run-instance` (checkout, `setup-node`, three `run` steps), stored 62 log lines and a successful job, and the API served them; 4 s in all. The same log streamed live over the tunnel as server-sent events.
+- **The same run on an InstaBox machine** (runner snapshot `raccoonci-runner-9c482bc`, reached through the tunnel at `/agent`): success, the machine up in 9.8 s, 16 s from the request to the end of the run, the same steps in the log, and the machine was gone afterwards.
+- **Deliveries sent by GitHub itself** (a repository webhook on `bench-lint-docs` through the tunnel): the ping got 200; two pushes and a pull request being opened and closed arrived signed, were accepted with 202, read the repository's workflow at the commit with the real API, and were recorded as ignored (the repository's only workflow listens to `workflow_dispatch`). The token lacked the `workflow` scope, so no push-triggered workflow could be added to see a run created from a real delivery.
+- **Status, cancel, rerun on InstaBox:** a run's commit showed `pending` then `success` ("Succeeded in 27s") on GitHub; a run cancelled 5 s in ended as cancelled with status `error`; a rerun repeated the first (`rerun_of`) and succeeded. The cancelled run exposed a leak: the machine was still being created, the delete was refused (409 `operation_conflict`) and given up on, so it ran until its 2 h deadline. `instabox.Client.DeleteMachine` now waits and asks again; checked live (no machine left after a cancel during creation).
+- **Not tried:** a run created from a delivery GitHub sent, a real pull request, App authentication against real GitHub, artifacts from a real job, a run with a matrix.

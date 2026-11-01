@@ -1,0 +1,541 @@
+package execute
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"raccoonci/internal/dispatch"
+	"raccoonci/internal/runner"
+	"raccoonci/internal/server/store"
+	"raccoonci/internal/value"
+	"raccoonci/internal/wire"
+)
+
+const twoJobs = `on: push
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      v: ${{ steps.s.outputs.v }}
+    steps:
+      - id: s
+        run: echo "v=1" >> "$GITHUB_OUTPUT"
+  test:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ${{ needs.build.outputs.v }}
+`
+
+// call is what the fake machine saw for one job.
+type call struct {
+	name   string
+	spec   wire.InstanceSpec
+	job    dispatch.Job
+	source []byte
+}
+
+// fakeMachine plays a machine: it reads the instance it is sent, as
+// `raccoonci run-instance` would, and answers with wire lines.
+type fakeMachine struct {
+	mu     sync.Mutex
+	calls  []call
+	handle func(c call, out *wire.Encoder) (dispatch.Result, error)
+	// hang makes a job wait until it is cancelled, closing started once it is there.
+	hang    bool
+	started chan struct{}
+	once    sync.Once
+}
+
+func (m *fakeMachine) Run(ctx context.Context, name string, job dispatch.Job) (dispatch.Result, error) {
+	var spec wire.InstanceSpec
+	if err := json.Unmarshal(job.Input, &spec); err != nil {
+		return dispatch.Result{}, err
+	}
+	var src bytes.Buffer
+	if err := job.Source(&src); err != nil {
+		return dispatch.Result{}, err
+	}
+	c := call{name: name, spec: spec, job: job, source: src.Bytes()}
+	m.mu.Lock()
+	m.calls = append(m.calls, c)
+	m.mu.Unlock()
+	if m.hang {
+		m.once.Do(func() { close(m.started) })
+		<-ctx.Done()
+		return dispatch.Result{}, ctx.Err()
+	}
+	out := wire.NewEncoder(job.Log)
+	if m.handle != nil {
+		return m.handle(c, out)
+	}
+	return succeed(c, out)
+}
+
+func succeed(c call, out *wire.Encoder) (dispatch.Result, error) {
+	now := time.Now()
+	out.Write(wire.Line{Event: &runner.Event{Kind: runner.JobStarted, Time: now, Job: c.spec.Job}})
+	out.Write(wire.Line{Event: &runner.Event{Kind: runner.Output, Time: now, Job: c.spec.Job, Step: "Run echo", Text: "hello from " + c.spec.Job}})
+	out.Write(wire.Line{Event: &runner.Event{Kind: runner.JobFinished, Time: now, Job: c.spec.Job, Conclusion: runner.Success}})
+	out.Write(wire.Line{Result: &wire.Result{Conclusion: runner.Success, Outputs: json.RawMessage(`{"v":"1"}`), DurationMS: 5}})
+	return dispatch.Result{}, nil
+}
+
+type fakeSource struct {
+	mu    sync.Mutex
+	got   []string
+	err   error
+	bytes string
+}
+
+func (s *fakeSource) SourceTar(_ context.Context, inst int64, repo, sha string, w io.Writer) error {
+	s.mu.Lock()
+	s.got = append(s.got, fmt.Sprintf("%d %s %s", inst, repo, sha))
+	s.mu.Unlock()
+	if s.err != nil {
+		return s.err
+	}
+	_, err := io.WriteString(w, s.bytes)
+	return err
+}
+
+type fakeServices struct{}
+
+func (fakeServices) JobEnv(run int64, job string) (map[string]string, error) {
+	return map[string]string{"ACTIONS_RESULTS_URL": "https://ci.example/", "ACTIONS_RUNTIME_TOKEN": fmt.Sprintf("tok-%d-%s", run, job)}, nil
+}
+
+type env struct {
+	st  *store.SQLite
+	src *fakeSource
+	m   *fakeMachine
+	ex  *Executor
+}
+
+func newEnv(t *testing.T) *env {
+	t.Helper()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "server.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	e := &env{st: st, src: &fakeSource{bytes: "TARBALL"}, m: &fakeMachine{}}
+	e.ex = &Executor{Store: st, Source: e.src, Machine: e.m, Services: fakeServices{}, WorkDir: t.TempDir(), Poll: 10 * time.Millisecond}
+	return e
+}
+
+func (e *env) queue(t *testing.T, delivery, workflowText string, edit func(*store.Run)) store.Run {
+	t.Helper()
+	ev, _, err := e.st.RecordEvent(context.Background(), store.Event{DeliveryID: delivery, Kind: "push", Repo: "acme/web", InstallationID: 42,
+		Payload: []byte(`{"ref":"refs/heads/main","repository":{"full_name":"acme/web"}}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := store.Run{EventID: ev.ID, Repo: "acme/web", WorkflowPath: ".github/workflows/ci.yml", WorkflowName: "CI", Event: "push",
+		Ref: "refs/heads/main", SHA: strings.Repeat("a", 40), Actor: "alice", WorkflowText: workflowText}
+	if edit != nil {
+		edit(&r)
+	}
+	run, _, err := e.st.CreateRun(context.Background(), r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return run
+}
+
+// start runs the executor until the test ends.
+func (e *env) start(t *testing.T) context.CancelFunc {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); e.ex.Run(ctx) }()
+	t.Cleanup(func() { cancel(); <-done })
+	return cancel
+}
+
+func (e *env) wait(t *testing.T, id int64) store.Run {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		r, err := e.st.GetRun(context.Background(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r.Status == store.RunCompleted {
+			return r
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("run %d did not finish", id)
+	return store.Run{}
+}
+
+func (e *env) log(t *testing.T, id int64) []logEvent {
+	t.Helper()
+	lines, err := e.st.ReadLog(context.Background(), id, 0, 10000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []logEvent
+	for _, l := range lines {
+		var ev logEvent
+		if err := json.Unmarshal([]byte(l.Data), &ev); err != nil {
+			t.Fatalf("log line %q: %v", l.Data, err)
+		}
+		out = append(out, ev)
+	}
+	return out
+}
+
+func TestARunIsFetchedSentToMachinesAndLogged(t *testing.T) {
+	e := newEnv(t)
+	run := e.queue(t, "d1", twoJobs, nil)
+	e.start(t)
+	done := e.wait(t, run.ID)
+	if done.Conclusion != "success" {
+		t.Fatalf("conclusion %q; log: %+v", done.Conclusion, e.log(t, run.ID))
+	}
+	if len(e.src.got) != 1 || e.src.got[0] != "42 acme/web "+strings.Repeat("a", 40) {
+		t.Fatalf("source fetched as %v, want the run's commit for installation 42", e.src.got)
+	}
+	if len(e.m.calls) != 2 {
+		t.Fatalf("%d machine calls, want 2", len(e.m.calls))
+	}
+	byJob := map[string]call{}
+	names := map[string]bool{}
+	for _, c := range e.m.calls {
+		byJob[c.spec.Job] = c
+		names[c.name] = true
+		if c.job.Command != "run-instance" || string(c.source) != "TARBALL" || c.spec.Workflow != ".github/workflows/ci.yml" || c.spec.Install != "all" {
+			t.Errorf("call = %+v", c)
+		}
+		if !strings.HasPrefix(c.spec.ServiceEnv["ACTIONS_RUNTIME_TOKEN"], fmt.Sprintf("tok-%d-", run.ID)) {
+			t.Errorf("service env = %v", c.spec.ServiceEnv)
+		}
+		if len(c.job.Secrets) != 0 {
+			t.Errorf("a run without secrets sent some: %v", c.job.Secrets)
+		}
+	}
+	if len(names) != 2 {
+		t.Fatalf("machines must have unique names, got %v", names)
+	}
+	// The second job saw the first one's output.
+	ctxv, err := value.FromJSON(byJob["test"].spec.Contexts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	needs, _ := ctxv.(value.Object).Get("needs")
+	build, _ := needs.(value.Object).Get("build")
+	outputs, _ := build.(value.Object).Get("outputs")
+	if v, _ := outputs.(value.Object).Get("v"); v != "1" {
+		t.Fatalf("needs.build.outputs.v = %v, want 1 (contexts %s)", v, byJob["test"].spec.Contexts)
+	}
+	gh, _ := ctxv.(value.Object).Get("github")
+	if sha, _ := gh.(value.Object).Get("sha"); sha != strings.Repeat("a", 40) {
+		t.Fatalf("github.sha = %v", sha)
+	}
+	jobs, _ := e.st.ListJobs(context.Background(), run.ID)
+	if len(jobs) != 2 || jobs[0].Status != store.RunCompleted || jobs[0].Conclusion != "success" || jobs[1].Conclusion != "success" {
+		t.Fatalf("jobs = %+v", jobs)
+	}
+	var hello int
+	for _, ev := range e.log(t, run.ID) {
+		if ev.Kind == "output" && strings.HasPrefix(ev.Text, "hello from ") {
+			hello++
+		}
+	}
+	if hello != 2 {
+		t.Fatalf("%d output lines in the log, want 2: %+v", hello, e.log(t, run.ID))
+	}
+	if entries, _ := filepath.Glob(filepath.Join(e.ex.WorkDir, "run-*")); len(entries) != 0 {
+		t.Fatalf("the run's working files were left: %v", entries)
+	}
+}
+
+func TestAFailingJobFailsTheRunAndStopsWhatNeedsIt(t *testing.T) {
+	e := newEnv(t)
+	e.m.handle = func(c call, out *wire.Encoder) (dispatch.Result, error) {
+		out.Write(wire.Line{Event: &runner.Event{Kind: runner.Error, Time: time.Now(), Job: c.spec.Job, Text: "boom"}})
+		out.Write(wire.Line{Result: &wire.Result{Conclusion: runner.Failure, Outputs: json.RawMessage(`{}`)}})
+		return dispatch.Result{ExitCode: 0}, nil
+	}
+	run := e.queue(t, "d", twoJobs, nil)
+	e.start(t)
+	done := e.wait(t, run.ID)
+	if done.Conclusion != "failure" {
+		t.Fatalf("conclusion %q", done.Conclusion)
+	}
+	if len(e.m.calls) != 1 {
+		t.Fatalf("%d machines used, want only build's: test needs it and must not run", len(e.m.calls))
+	}
+	jobs, _ := e.st.ListJobs(context.Background(), run.ID)
+	if len(jobs) != 1 || jobs[0].Conclusion != "failure" {
+		t.Fatalf("jobs = %+v", jobs)
+	}
+}
+
+func TestAMachineThatFailsOrSaysNothingFailsTheInstanceWithAReason(t *testing.T) {
+	cases := map[string]func(c call, out *wire.Encoder) (dispatch.Result, error){
+		"error": func(call, *wire.Encoder) (dispatch.Result, error) {
+			return dispatch.Result{}, errors.New("no machine could be made")
+		},
+		"agent error": func(call, *wire.Encoder) (dispatch.Result, error) { return dispatch.Result{Error: "cannot start"}, nil },
+		"no result":   func(call, *wire.Encoder) (dispatch.Result, error) { return dispatch.Result{ExitCode: 2}, nil },
+		"plain output": func(c call, out *wire.Encoder) (dispatch.Result, error) {
+			c.job.Log.Write([]byte("panic: oops\n"))
+			return dispatch.Result{ExitCode: 2}, nil
+		},
+	}
+	for name, h := range cases {
+		t.Run(name, func(t *testing.T) {
+			e := newEnv(t)
+			e.m.handle = h
+			run := e.queue(t, "d", twoJobs, nil)
+			e.start(t)
+			if done := e.wait(t, run.ID); done.Conclusion != "failure" {
+				t.Fatalf("conclusion %q", done.Conclusion)
+			}
+			var errText string
+			for _, ev := range e.log(t, run.ID) {
+				if ev.Kind == "error" {
+					errText += ev.Text
+				}
+			}
+			if errText == "" {
+				t.Fatalf("no error in the log: %+v", e.log(t, run.ID))
+			}
+			jobs, _ := e.st.ListJobs(context.Background(), run.ID)
+			if len(jobs) == 0 || jobs[0].Conclusion != "failure" || jobs[0].CompletedAt.IsZero() {
+				t.Fatalf("jobs = %+v", jobs)
+			}
+		})
+	}
+}
+
+func TestARunWhoseSourceCannotBeFetchedFailsWithoutAMachine(t *testing.T) {
+	e := newEnv(t)
+	e.src.err = errors.New("repository not found")
+	run := e.queue(t, "d", twoJobs, nil)
+	e.start(t)
+	done := e.wait(t, run.ID)
+	if done.Conclusion != "failure" || len(e.m.calls) != 0 {
+		t.Fatalf("conclusion %q, %d machines", done.Conclusion, len(e.m.calls))
+	}
+	if log := e.log(t, run.ID); len(log) != 1 || !strings.Contains(log[0].Text, "repository not found") {
+		t.Fatalf("log = %+v", log)
+	}
+}
+
+func TestAnInvalidStoredWorkflowFailsTheRun(t *testing.T) {
+	e := newEnv(t)
+	run := e.queue(t, "d", "on: push\njobs: {}\nbogus: 1\n", nil)
+	e.start(t)
+	if done := e.wait(t, run.ID); done.Conclusion != "failure" {
+		t.Fatalf("conclusion %q", done.Conclusion)
+	}
+	if len(e.src.got) != 0 {
+		t.Fatal("the source was fetched for a workflow that cannot run")
+	}
+}
+
+func TestRunsLeftInProgressByAStoppedServerAreEndedAtStart(t *testing.T) {
+	e := newEnv(t)
+	left := e.queue(t, "left", twoJobs, nil)
+	if _, ok, _ := e.st.ClaimRun(context.Background()); !ok { // a previous process claimed it and died
+		t.Fatal("setup")
+	}
+	e.m.handle = func(c call, out *wire.Encoder) (dispatch.Result, error) { return succeed(c, out) }
+	e.start(t)
+	got := e.wait(t, left.ID)
+	if got.Conclusion != "failure" || len(e.m.calls) != 0 {
+		t.Fatalf("interrupted run: %q, %d machine calls; it must be ended, not run again", got.Conclusion, len(e.m.calls))
+	}
+}
+
+func TestStoppingTheServerCancelsRunsInProgress(t *testing.T) {
+	e := newEnv(t)
+	e.m.hang = true
+	e.m.started = make(chan struct{})
+	run := e.queue(t, "d", twoJobs, nil)
+	stop := e.start(t)
+	select {
+	case <-e.m.started:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the job never reached a machine")
+	}
+	stop()
+	done := e.wait(t, run.ID)
+	if done.Conclusion != "cancelled" {
+		t.Fatalf("conclusion %q, want cancelled", done.Conclusion)
+	}
+	jobs, _ := e.st.ListJobs(context.Background(), run.ID)
+	if len(jobs) != 1 || jobs[0].Status != store.RunCompleted {
+		t.Fatalf("jobs = %+v: a job of a cancelled run must be ended too", jobs)
+	}
+}
+
+type fakeReporter struct {
+	mu          sync.Mutex
+	got         []string
+	pendingWait time.Duration
+	err         error
+}
+
+func (f *fakeReporter) Report(_ context.Context, inst int64, run store.Run, state, desc string) error {
+	if state == "pending" {
+		time.Sleep(f.pendingWait)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.got = append(f.got, fmt.Sprintf("%d %s %s %s %s", inst, run.SHA[:4], state, strings.Fields(desc)[0], run.WorkflowName))
+	return f.err
+}
+
+func (f *fakeReporter) states() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.got...)
+}
+
+func TestARunIsReportedPendingThenItsEndInThatOrderWhateverTheSpeed(t *testing.T) {
+	e := newEnv(t)
+	rep := &fakeReporter{pendingWait: 300 * time.Millisecond} // a slow pending must not land after the end
+	e.ex.Reporter = rep
+	run := e.queue(t, "d", twoJobs, nil)
+	e.start(t)
+	e.wait(t, run.ID)
+	deadline := time.Now().Add(5 * time.Second)
+	for len(rep.states()) < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	got := rep.states()
+	want := []string{"42 aaaa pending Running CI", "42 aaaa success Succeeded CI"}
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("reports = %v, want %v", got, want)
+	}
+}
+
+func TestAFailedRunIsReportedFailedAndGitHubErrorsDoNotFailRuns(t *testing.T) {
+	e := newEnv(t)
+	rep := &fakeReporter{err: errors.New("github is down")}
+	e.ex.Reporter = rep
+	e.m.handle = func(c call, out *wire.Encoder) (dispatch.Result, error) {
+		out.Write(wire.Line{Result: &wire.Result{Conclusion: runner.Failure, Outputs: json.RawMessage(`{}`)}})
+		return dispatch.Result{}, nil
+	}
+	run := e.queue(t, "d", twoJobs, nil)
+	e.start(t)
+	done := e.wait(t, run.ID)
+	if done.Conclusion != "failure" {
+		t.Fatalf("conclusion %q", done.Conclusion)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for len(rep.states()) < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := rep.states(); len(got) != 2 || !strings.Contains(got[1], "failure Failed") {
+		t.Fatalf("reports = %v", got)
+	}
+}
+
+func TestCancelEndsOneRunAndOnlyAnActiveOne(t *testing.T) {
+	e := newEnv(t)
+	e.m.hang = true
+	e.m.started = make(chan struct{})
+	rep := &fakeReporter{}
+	e.ex.Reporter = rep
+	run := e.queue(t, "d", twoJobs, nil)
+	e.start(t)
+	select {
+	case <-e.m.started:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the job never reached a machine")
+	}
+	if !e.ex.Cancel(run.ID) {
+		t.Fatal("a running run could not be cancelled")
+	}
+	done := e.wait(t, run.ID)
+	if done.Conclusion != "cancelled" {
+		t.Fatalf("conclusion %q", done.Conclusion)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for len(rep.states()) < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := rep.states(); len(got) != 2 || !strings.Contains(got[1], "error Cancelled") {
+		t.Fatalf("reports = %v", got)
+	}
+	if e.ex.Cancel(run.ID) || e.ex.Cancel(999) {
+		t.Fatal("Cancel said it stopped a run that is not running")
+	}
+}
+
+func TestOnlyMaxRunsRunAtOnce(t *testing.T) {
+	e := newEnv(t)
+	e.ex.MaxRuns = 1
+	var mu sync.Mutex
+	active, peak := 0, 0
+	e.m.handle = func(c call, out *wire.Encoder) (dispatch.Result, error) {
+		mu.Lock()
+		active++
+		peak = max(peak, active)
+		mu.Unlock()
+		time.Sleep(60 * time.Millisecond)
+		mu.Lock()
+		active--
+		mu.Unlock()
+		return succeed(c, out)
+	}
+	single := "on: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo\n"
+	a := e.queue(t, "a", single, func(r *store.Run) { r.WorkflowPath = "a.yml" })
+	b := e.queue(t, "b", single, func(r *store.Run) { r.WorkflowPath = "b.yml" })
+	e.start(t)
+	e.wait(t, a.ID)
+	e.wait(t, b.ID)
+	if peak != 1 {
+		t.Fatalf("%d runs ran at once with MaxRuns 1", peak)
+	}
+}
+
+func TestGithubContext(t *testing.T) {
+	get := func(o value.Object, k string) any { v, _ := o.Get(k); return v }
+	push := githubContext(store.Run{ID: 9, Repo: "acme/web", WorkflowPath: ".github/workflows/ci.yml", WorkflowName: "CI", Event: "push",
+		Ref: "refs/heads/feature/x", SHA: "abc", Actor: "alice"}, value.Object{})
+	for k, want := range map[string]string{"event_name": "push", "ref_name": "feature/x", "ref_type": "branch", "repository_owner": "acme",
+		"run_id": "9", "workflow": "CI", "workflow_ref": "acme/web/.github/workflows/ci.yml@refs/heads/feature/x", "actor": "alice", "head_ref": ""} {
+		if got := get(push, k); got != want {
+			t.Errorf("push %s = %v, want %q", k, got, want)
+		}
+	}
+	tag := githubContext(store.Run{Repo: "a/b", Ref: "refs/tags/v1.0", Event: "push", WorkflowPath: "w.yml"}, value.Object{})
+	if get(tag, "ref_type") != "tag" || get(tag, "ref_name") != "v1.0" || get(tag, "workflow") != "w.yml" {
+		t.Errorf("tag = %v %v %v", get(tag, "ref_type"), get(tag, "ref_name"), get(tag, "workflow"))
+	}
+	payload, _ := value.FromJSON([]byte(`{"pull_request":{"head":{"ref":"feature"},"base":{"ref":"main"}}}`))
+	pr := githubContext(store.Run{Repo: "a/b", Ref: "refs/pull/7/merge", Event: "pull_request", PullRequest: 7}, payload.(value.Object))
+	if get(pr, "head_ref") != "feature" || get(pr, "base_ref") != "main" || get(pr, "ref_name") != "7/merge" {
+		t.Errorf("pr = head %v base %v ref_name %v", get(pr, "head_ref"), get(pr, "base_ref"), get(pr, "ref_name"))
+	}
+	if get(pr, "event") == nil {
+		t.Error("the event payload is missing")
+	}
+}
+
+func TestEncodeEventUsesNamesNotNumbers(t *testing.T) {
+	var ev logEvent
+	if err := json.Unmarshal([]byte(EncodeEvent(runner.Event{Kind: runner.StepFinished, Job: "j", Step: "s", Conclusion: runner.Success})), &ev); err != nil {
+		t.Fatal(err)
+	}
+	if ev.Kind != "step_finished" || ev.Job != "j" || ev.Conclusion != "success" || ev.Time.IsZero() {
+		t.Fatalf("event = %+v", ev)
+	}
+}

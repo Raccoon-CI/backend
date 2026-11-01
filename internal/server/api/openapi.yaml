@@ -1,0 +1,247 @@
+openapi: 3.0.3
+info:
+  title: Raccoon CI server API
+  version: "0.1"
+  description: |
+    Read side of the server (draft). Every /v1 route except this file needs
+    `Authorization: Bearer <token>`. The API is closed (503) while the server has
+    no API token configured.
+paths:
+  /healthz:
+    get:
+      summary: Liveness, no authentication
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: {type: string}
+                  version: {type: string}
+  /v1/openapi.yaml:
+    get:
+      summary: This file, no authentication
+      responses:
+        "200":
+          description: the OpenAPI description
+          content:
+            application/yaml:
+              schema: {type: string}
+  /v1/runs:
+    get:
+      summary: Runs, newest first
+      parameters:
+        - {name: repo, in: query, schema: {type: string}, description: "owner/name"}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 50}}
+        - {name: before, in: query, schema: {type: integer}, description: "only runs with a smaller id; pass next_before of the previous page"}
+      responses:
+        "200":
+          description: a page of runs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  runs:
+                    type: array
+                    items: {$ref: "#/components/schemas/Run"}
+                  next_before: {type: integer, description: "0 on the last page"}
+        "400": {$ref: "#/components/responses/Error"}
+        "401": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Error"}
+    post:
+      summary: Start a workflow by hand (workflow_dispatch)
+      description: |
+        Runs the workflow file at the commit `ref` names now. The workflow must
+        have a `workflow_dispatch` trigger; `inputs` are checked against the ones
+        it declares (defaults filled, required ones needed, choices checked).
+        `ref` is a branch name or a full ref (`refs/tags/v1`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [repo, ref, workflow]
+              properties:
+                repo: {type: string, description: "owner/name"}
+                ref: {type: string}
+                workflow: {type: string, description: ".github/workflows/ci.yml"}
+                inputs: {type: object, additionalProperties: {type: string}}
+      responses:
+        "201":
+          description: the queued run
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Run"}
+        "400": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+        "422": {$ref: "#/components/responses/Error"}
+  /v1/runs/{id}/cancel:
+    post:
+      summary: Cancel a queued or running run
+      description: A queued run ends at once (200); a running one is told to stop and ends a moment later as cancelled (202).
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: integer}}
+      responses:
+        "200": {description: "a queued run, cancelled"}
+        "202": {description: "a running run, told to stop"}
+        "404": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+  /v1/runs/{id}/rerun:
+    post:
+      summary: Run a finished run again
+      description: A new queued run with the same event, commit, workflow file (as it was) and inputs; its `rerun_of` names the run that started the chain.
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: integer}}
+      responses:
+        "201":
+          description: the new run
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Run"}
+        "404": {$ref: "#/components/responses/Error"}
+        "409": {$ref: "#/components/responses/Error"}
+  /v1/runs/{id}/jobs:
+    get:
+      summary: The job instances of a run (a matrix job has one per combination)
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: integer}}
+      responses:
+        "200":
+          description: the jobs, in the order they started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jobs:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: {type: integer}
+                        name: {type: string}
+                        status: {type: string, enum: [in_progress, completed]}
+                        conclusion: {type: string}
+                        started_at: {type: string, format: date-time}
+                        completed_at: {type: string, format: date-time}
+        "404": {$ref: "#/components/responses/Error"}
+  /v1/runs/{id}/log:
+    get:
+      summary: The log of a run
+      description: |
+        One ordered stream of events per run. Each line has an `id` that grows
+        with the order; ask again with `after=<next_after>`. With
+        `Accept: text/event-stream` the log is sent as server-sent events (the
+        line's id is the event id, so `Last-Event-ID` resumes) until an `end`
+        event, which carries the run's conclusion.
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: integer}}
+        - {name: after, in: query, schema: {type: integer, default: 0}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 5000, default: 500}}
+      responses:
+        "200":
+          description: a page of the log
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  lines:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: {type: integer}
+                        at: {type: string, format: date-time}
+                        event: {$ref: "#/components/schemas/LogEvent"}
+                  next_after: {type: integer}
+                  done: {type: boolean, description: "the run has ended and nothing is left after next_after"}
+            text/event-stream:
+              schema: {type: string}
+        "400": {$ref: "#/components/responses/Error"}
+        "404": {$ref: "#/components/responses/Error"}
+  /v1/runs/{id}:
+    get:
+      summary: One run, with the workflow file it started from
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: integer}}
+      responses:
+        "200":
+          description: the run
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Run"}
+        "404": {$ref: "#/components/responses/Error"}
+  /v1/events/{id}:
+    get:
+      summary: One webhook delivery and what was decided for it (not its payload)
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: integer}}
+      responses:
+        "200":
+          description: the event
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Event"}
+        "404": {$ref: "#/components/responses/Error"}
+components:
+  responses:
+    Error:
+      description: an error
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error: {type: string}
+  schemas:
+    Run:
+      type: object
+      properties:
+        id: {type: integer}
+        event_id: {type: integer}
+        repo: {type: string}
+        workflow_path: {type: string}
+        workflow_name: {type: string}
+        event: {type: string, description: "push, pull_request, ..."}
+        ref: {type: string}
+        sha: {type: string}
+        base_sha: {type: string}
+        pull_request: {type: integer}
+        rerun_of: {type: integer, description: "the run this repeats; absent for a run an event started"}
+        fork: {type: boolean, description: "a pull request from another repository: no secrets"}
+        actor: {type: string}
+        status: {type: string, enum: [queued, in_progress, completed]}
+        conclusion: {type: string}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        workflow: {type: string, description: "only in the detail"}
+    LogEvent:
+      type: object
+      properties:
+        kind:
+          type: string
+          enum: [job_started, step_started, output, debug, notice, warning, error, group_start, group_end, step_finished, job_finished, unknown]
+        time: {type: string, format: date-time}
+        job: {type: string, description: "the job instance the line belongs to; empty for the run itself"}
+        step: {type: string}
+        depth: {type: integer, description: "1 inside a composite action"}
+        text: {type: string}
+        props: {type: object, additionalProperties: {type: string}, description: "an annotation's file, line, title"}
+        conclusion: {type: string}
+    Event:
+      type: object
+      properties:
+        id: {type: integer}
+        delivery_id: {type: string}
+        kind: {type: string}
+        action: {type: string}
+        repo: {type: string}
+        received_at: {type: string, format: date-time}
+        status: {type: string, enum: [received, handled, ignored, failed]}
+        note: {type: string, description: "JSON text: per workflow file, run / skipped / invalid; or why it failed"}

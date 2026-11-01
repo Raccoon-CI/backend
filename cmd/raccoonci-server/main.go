@@ -1,0 +1,273 @@
+// Command raccoonci-server is the Raccoon CI server: it receives GitHub's
+// webhooks, decides which workflows they start, keeps the runs, and serves
+// them through an HTTP API. See docs/server-design.md.
+package main
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"log/slog"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+
+	"raccoonci/internal/dispatch"
+	"raccoonci/internal/instabox"
+	"raccoonci/internal/server/api"
+	"raccoonci/internal/server/artifacts"
+	"raccoonci/internal/server/config"
+	"raccoonci/internal/server/execute"
+	"raccoonci/internal/server/github"
+	"raccoonci/internal/server/intake"
+	"raccoonci/internal/server/store"
+)
+
+// version is set at build time via -ldflags "-X main.version=...".
+var version = "dev"
+
+type listFlag []string
+
+func (l *listFlag) String() string     { return fmt.Sprint(*l) }
+func (l *listFlag) Set(v string) error { *l = append(*l, v); return nil }
+
+func main() {
+	if err := run(os.Args[1:]); err != nil {
+		fmt.Fprintln(os.Stderr, "raccoonci-server:", err)
+		os.Exit(1)
+	}
+}
+
+func defaultDataDir() string {
+	if d := os.Getenv("XDG_DATA_HOME"); d != "" {
+		return filepath.Join(d, "raccoonci-server")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "raccoonci-server-data"
+	}
+	return filepath.Join(home, ".local", "share", "raccoonci-server")
+}
+
+func run(args []string) error {
+	if len(args) > 0 && args[0] == "replay" {
+		return replay(args[1:])
+	}
+	fs := flag.NewFlagSet("raccoonci-server", flag.ExitOnError)
+	showVersion := fs.Bool("version", false, "print the version and exit")
+	listen := fs.String("listen", "127.0.0.1:18080", "address to listen on (put a TLS-terminating proxy or tunnel in front of it)")
+	dataDir := fs.String("data-dir", defaultDataDir(), "where the database lives")
+	publicURL := fs.String("public-url", "", "the https address the machines reach this server at (their job assignments, artifacts); needed to run jobs")
+	snapshot := fs.String("snapshot", os.Getenv("RACCOONCI_INSTABOX_SNAPSHOT"), "the InstaBox runner snapshot machines start from (env RACCOONCI_INSTABOX_SNAPSHOT); needed to run jobs")
+	status := fs.Bool("status", true, "report each run to GitHub as a commit status (raccoonci / <workflow>) on the commit it ran; the token or App needs to write commit statuses")
+	localRunner := fs.String("local-runner", "", "run jobs on THIS machine with this raccoonci binary, as this user and without isolation: for development and trusted code only")
+	var allow listFlag
+	fs.Var(&allow, "allow", "a repository the server works for, owner/name or owner/* (repeatable; at least one)")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), `usage: raccoonci-server -allow owner/name [flags]
+
+Secrets are read from the environment, or from the file named by NAME_FILE (mode 600), never from flags:
+  RACCOONCI_WEBHOOK_SECRET       signs GitHub's deliveries (required)
+  RACCOONCI_API_TOKEN            bearer token for /v1 (without it the API answers 503)
+  RACCOONCI_GITHUB_APP_ID        with RACCOONCI_GITHUB_APP_KEY_FILE (the App's private key, mode 600): act as a GitHub App
+  RACCOONCI_GITHUB_TOKEN         instead of an App, one token (development, with a repository webhook)
+  INSTABOX_API_KEY (or IBX_API_KEY)  the InstaBox key machines are made with (with -public-url and -snapshot: run jobs)`)
+		fs.PrintDefaults()
+	}
+	fs.Parse(args)
+	if *showVersion {
+		fmt.Println(version)
+		return nil
+	}
+	if len(allow) == 0 {
+		fs.Usage()
+		return errors.New("no repository is enabled: give -allow owner/name or owner/*")
+	}
+
+	webhookSecret, err := config.Required("RACCOONCI_WEBHOOK_SECRET")
+	if err != nil {
+		return err
+	}
+	apiToken, err := config.Secret("RACCOONCI_API_TOKEN")
+	if err != nil {
+		return err
+	}
+	tokens, authMode, err := githubAuth()
+	if err != nil {
+		return err
+	}
+	instaboxKey, err := config.Secret("INSTABOX_API_KEY")
+	if err != nil {
+		return err
+	}
+	if instaboxKey == "" { // INSTABOX_API_KEY is reserved on InstaBox machines; a Secret there needs another name
+		if instaboxKey, err = config.Secret("IBX_API_KEY"); err != nil {
+			return err
+		}
+	}
+
+	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := os.MkdirAll(*dataDir, 0o700); err != nil {
+		return err
+	}
+	dbPath := filepath.Join(*dataDir, "server.db")
+	st, err := store.OpenSQLite(dbPath)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+
+	gh := &github.Client{Tokens: tokens}
+	hook := &intake.Handler{Secret: []byte(webhookSecret), Store: st, Allow: allow, Log: log, Source: gh}
+	mux := http.NewServeMux()
+	mux.Handle("/webhooks/github", hook)
+	apiSvc := &api.API{Store: st, Dispatcher: hook, Token: apiToken, Version: version}
+	mux.Handle("/", apiSvc.Handler())
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// Execution needs three things together: where machines reach the
+	// server, the runner snapshot to start them from, and the InstaBox key.
+	var executed chan struct{}
+	instaboxMode := *publicURL != "" || *snapshot != "" || instaboxKey != ""
+	execution := instaboxMode || *localRunner != ""
+	if instaboxMode && *localRunner != "" {
+		return errors.New("-local-runner and InstaBox (-public-url, -snapshot, the key) are two ways to run jobs; use one")
+	}
+	if execution {
+		var machine execute.Machine
+		var base string
+		if *localRunner != "" {
+			// Jobs run on this machine, as this user, with no isolation:
+			// development, or a machine that exists for this, trusted code only.
+			host, _, err := net.SplitHostPort(*listen)
+			if err != nil || (host != "127.0.0.1" && host != "localhost" && host != "::1" && *publicURL == "") {
+				return errors.New("-local-runner serves its jobs at the listen address, which must then be a loopback one (127.0.0.1:PORT), or give -public-url")
+			}
+			base = "http://" + *listen
+			if *publicURL != "" {
+				base = strings.TrimRight(*publicURL, "/")
+			}
+			machine = execute.Local{Binary: *localRunner, Dir: filepath.Join(*dataDir, "jobs")}
+			log.Warn("jobs run on THIS machine, as this user, without isolation (-local-runner): use it only for code you trust")
+		} else {
+			if *publicURL == "" || *snapshot == "" || instaboxKey == "" {
+				return errors.New("to run jobs on InstaBox give all three: -public-url, -snapshot (or RACCOONCI_INSTABOX_SNAPSHOT) and INSTABOX_API_KEY (or IBX_API_KEY)")
+			}
+			if !strings.HasPrefix(*publicURL, "https://") {
+				return errors.New("-public-url must be https: the machines' tokens travel on it")
+			}
+			base = strings.TrimRight(*publicURL, "/")
+			ctl := &dispatch.Controller{}
+			prov := &instabox.Provider{
+				Client:        &instabox.Client{Key: instaboxKey, URL: os.Getenv("INSTABOX_API_URL")},
+				Controller:    ctl,
+				ControllerURL: base + "/agent",
+				Snapshot:      *snapshot,
+				Logf:          func(f string, a ...any) { log.Info(fmt.Sprintf(f, a...), "from", "instabox") },
+			}
+			defer prov.Wait() // machines being deleted
+			mux.Handle("/agent/", http.StripPrefix("/agent", ctl.Handler()))
+			machine = execute.Instabox{P: prov}
+		}
+		arts, err := artifacts.New(artifacts.Config{Dir: filepath.Join(*dataDir, "artifacts"), PublicURL: base})
+		if err != nil {
+			return err
+		}
+		defer arts.Close()
+		arts.Mount(mux)
+		ex := &execute.Executor{Store: st, Source: gh, Machine: machine, Services: arts,
+			WorkDir: filepath.Join(*dataDir, "work"), Log: log}
+		if *status {
+			ex.Reporter = execute.Statuses{GH: gh}
+		}
+		hook.Notify = ex.Wake
+		apiSvc.Canceller = ex
+		executed = make(chan struct{})
+		go func() {
+			defer close(executed)
+			if err := ex.Run(ctx); err != nil {
+				log.Error("the executor stopped", "err", err)
+			}
+		}()
+	}
+
+	srv := &http.Server{
+		Addr: *listen, Handler: mux,
+		ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 5 * time.Minute, WriteTimeout: 0, IdleTimeout: 2 * time.Minute,
+	}
+	if err := hook.Recover(ctx); err != nil {
+		return fmt.Errorf("looking for deliveries left from before: %w", err)
+	}
+	errc := make(chan error, 1)
+	go func() { errc <- srv.ListenAndServe() }()
+	log.Info("listening", "addr", *listen, "db", dbPath, "allow", []string(allow), "github_auth", authMode, "api", apiToken != "",
+		"runs", map[bool]string{true: "executed on InstaBox", false: "queued only (no -public-url, -snapshot and InstaBox key)"}[execution], "version", version)
+
+	select {
+	case err := <-errc:
+		return err
+	case <-ctx.Done():
+	}
+	log.Info("shutting down")
+	shutdown, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	err = srv.Shutdown(shutdown)
+	hook.Wait()
+	if executed != nil {
+		<-executed // runs in progress are cancelled and recorded
+	}
+	return err
+}
+
+// githubAuth picks how the server calls GitHub, and says which in words (never the credential).
+func githubAuth() (github.TokenSource, string, error) {
+	appID, err := config.Secret("RACCOONCI_GITHUB_APP_ID")
+	if err != nil {
+		return nil, "", err
+	}
+	token, err := config.Secret("RACCOONCI_GITHUB_TOKEN")
+	if err != nil {
+		return nil, "", err
+	}
+	switch {
+	case appID != "" && token != "":
+		return nil, "", errors.New("both a GitHub App and a token are configured; use one")
+	case appID != "":
+		id, err := strconv.ParseInt(appID, 10, 64)
+		if err != nil {
+			return nil, "", errors.New("RACCOONCI_GITHUB_APP_ID is not a number")
+		}
+		keyPath := os.Getenv("RACCOONCI_GITHUB_APP_KEY_FILE")
+		if keyPath == "" {
+			return nil, "", errors.New("RACCOONCI_GITHUB_APP_KEY_FILE is not set")
+		}
+		info, err := os.Stat(keyPath)
+		if err != nil {
+			return nil, "", err
+		}
+		if info.Mode().Perm()&0o077 != 0 {
+			return nil, "", fmt.Errorf("%s is readable by others; make it 600", keyPath)
+		}
+		pem, err := os.ReadFile(keyPath)
+		if err != nil {
+			return nil, "", err
+		}
+		key, err := github.ParsePrivateKey(pem)
+		if err != nil {
+			return nil, "", err
+		}
+		return &github.App{ID: id, Key: key}, "app", nil
+	case token != "":
+		return github.StaticToken(token), "token", nil
+	}
+	return nil, "", errors.New("no way to call GitHub: set RACCOONCI_GITHUB_APP_ID and RACCOONCI_GITHUB_APP_KEY_FILE, or RACCOONCI_GITHUB_TOKEN")
+}
