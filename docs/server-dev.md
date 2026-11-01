@@ -94,7 +94,17 @@ A run sets the commit status `raccoonci / <workflow name>` on the commit it ran:
 - Repositories never share. Unlike GitHub, a pull request cannot restore from its base branch unless that is the default branch.
 - Each space is limited to `-cache-limit-gb` (default 5); the least recently used entries go first. Spaces nobody uses any more are not removed yet, and the limit is per space, not per repository.
 
-Objects (artifacts and caches) live in a directory under `-data-dir`, or in a bucket the user provides: `-storage-s3-bucket B [-storage-s3-endpoint URL] [-storage-s3-region R] [-storage-s3-prefix P] [-storage-s3-path-style]`, with `RACCOONCI_STORAGE_S3_KEY` and `RACCOONCI_STORAGE_S3_SECRET`. For Cloudflare R2: endpoint `https://<account id>.r2.cloudflarestorage.com`, region `auto`. At start the bucket is tried (write, read back through a presigned link, delete) and the server refuses to start with one that does not work; a bucket that gives its objects to anyone without credentials is a warning in the log. Keep the bucket private. Downloads are presigned links straight to the bucket; uploads still pass through the server. The bucket is one for the whole server for now; one per organization comes with the secrets store.
+Objects (artifacts and caches) live in a directory under `-data-dir`, or in a bucket the user provides: `-storage-s3-bucket B [-storage-s3-endpoint URL] [-storage-s3-region R] [-storage-s3-prefix P] [-storage-s3-path-style]`, with `RACCOONCI_STORAGE_S3_KEY` and `RACCOONCI_STORAGE_S3_SECRET`. For Cloudflare R2: endpoint `https://<account id>.r2.cloudflarestorage.com`, region `auto`. At start the bucket is tried (write, read back through a presigned link, delete) and the server refuses to start with one that does not work; a bucket that gives its objects to anyone without credentials is a warning in the log. Keep the bucket private. Downloads are presigned links straight to the bucket; uploads still pass through the server. That bucket is the server's own, for organizations that have none of their own.
+
+**A bucket per organization** (what the users of the finished server do): an admin gives it through the API, and the artifacts and caches of that organization's repositories then go there, not to the server's.
+
+```sh
+PUT    /v1/storage  {"org":"acme","bucket":"acme-ci","endpoint":"https://<account>.r2.cloudflarestorage.com","region":"auto","prefix":"raccoon","access_key":"…","secret_key":"…"}
+GET    /v1/storage?org=acme        # where it is, never the keys
+DELETE /v1/storage?org=acme        # back to the server's own storage
+```
+
+The bucket is tried before its settings are kept (write, read back through a presigned link, delete): one that does not work is refused with the step that failed, one that anyone can read is kept with a warning. The settings and keys are sealed under the master key, in a row only the server reads: a workflow cannot name them, and the secrets API can neither list, overwrite nor delete them. Changing the bucket makes new artifacts and caches go to the new one; what is in the old one stays there, and a cache entry whose object is not in the new bucket is dropped when it is looked up. Needs the master key. Artifacts and caches of an organization with its own bucket go to separate services made on demand.
 
 ## What a run is, for now
 

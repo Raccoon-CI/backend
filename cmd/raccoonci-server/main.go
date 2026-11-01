@@ -30,6 +30,7 @@ import (
 	"raccoonci/internal/server/github"
 	"raccoonci/internal/server/intake"
 	"raccoonci/internal/server/secrets"
+	"raccoonci/internal/server/storage"
 	"raccoonci/internal/server/store"
 )
 
@@ -153,7 +154,27 @@ Secrets are read from the environment, or from the file named by NAME_FILE (mode
 		secretsSvc = &secrets.Service{Store: st, Vault: v}
 		apiSvc.Secrets = secretsSvc
 	} else {
-		log.Warn("no master key (RACCOONCI_MASTER_KEY): secrets and variables are off")
+		log.Warn("no master key (RACCOONCI_MASTER_KEY): secrets, variables and organizations' own buckets are off")
+	}
+
+	// The server's own bucket, if one was given, is tried before it is used.
+	// An organization may have one of its own (sealed under the master key);
+	// without a master key everything goes to the server's.
+	var bucket *blob.S3Config
+	if *s3Bucket != "" {
+		var err error
+		if bucket, err = storageConfig(*s3Bucket, *s3Endpoint, *s3Region, *s3Prefix, *s3PathStyle); err != nil {
+			return err
+		}
+		if err := checkStorage(context.Background(), bucket, log); err != nil {
+			return err
+		}
+	}
+	s3For := func(context.Context, string) (*blob.S3Config, string, error) { return bucket, "default", nil }
+	if secretsSvc != nil {
+		storageSvc := &storage.Service{Store: st, Vault: secretsSvc.Vault, Default: bucket}
+		apiSvc.Storage = storageSvc
+		s3For = storageSvc.For
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -203,23 +224,22 @@ Secrets are read from the environment, or from the file named by NAME_FILE (mode
 			mux.Handle("/agent/", http.StripPrefix("/agent", ctl.Handler()))
 			machine = execute.Instabox{P: prov}
 		}
-		var bucket *blob.S3Config
-		if *s3Bucket != "" {
-			if bucket, err = storageConfig(*s3Bucket, *s3Endpoint, *s3Region, *s3Prefix, *s3PathStyle); err != nil {
-				return err
-			}
-			if err := checkStorage(ctx, bucket, log); err != nil {
-				return err
-			}
-		}
-		arts, err := artifacts.New(artifacts.Config{Dir: filepath.Join(*dataDir, "artifacts"), PublicURL: base, S3: bucket})
+		arts, err := artifacts.New(artifacts.Config{Dir: filepath.Join(*dataDir, "artifacts"), PublicURL: base,
+			S3For: s3For, RunOrg: func(ctx context.Context, runID int64) (string, error) {
+				run, err := st.GetRun(ctx, runID)
+				if err != nil {
+					return "", err
+				}
+				owner, _, _ := strings.Cut(strings.ToLower(run.Repo), "/")
+				return owner, nil
+			}})
 		if err != nil {
 			return err
 		}
 		defer arts.Close()
 		arts.Mount(mux)
 		cacheSvc, err := caches.New(caches.Config{
-			Dir: filepath.Join(*dataDir, "caches"), PublicURL: base, Signer: arts.Signer(), S3: bucket,
+			Dir: filepath.Join(*dataDir, "caches"), PublicURL: base, Signer: arts.Signer(), S3For: s3For,
 			MaxBytes: int64(*cacheLimitGB) << 30,
 			Spaces:   (&caches.Resolver{Runs: st, Branches: gh}).Spaces,
 		})

@@ -47,9 +47,10 @@ type Config struct {
 	PublicURL string
 	// Signer is the one that signs the jobs' tokens (artifacts.Service.Signer).
 	Signer *artifact.Signer
-	// S3, if set, keeps the objects in that bucket, each space under its own
-	// prefix; its Prefix, if any, comes first. Nil keeps them in Dir.
-	S3 *blob.S3Config
+	// S3For says which bucket an organization's objects go to, each space
+	// under its own prefix after the bucket's own; nil, or a nil bucket, keeps
+	// them in Dir. version changes when the bucket does (storage.Service.For).
+	S3For func(ctx context.Context, org string) (bucket *blob.S3Config, version string, err error)
 	// MaxBytes caps the entries of one space (0: no cap); the least recently
 	// used go first, as on GitHub.
 	MaxBytes int64
@@ -67,10 +68,11 @@ type Service struct {
 }
 
 type space struct {
-	svc   *cache.Service
-	h     http.Handler
-	dl    http.Handler // nil when the objects are in a bucket
-	close func()
+	svc     *cache.Service
+	h       http.Handler
+	dl      http.Handler // nil when the objects are in a bucket
+	version string       // of the bucket it was made on
+	close   func()
 }
 
 // New starts the service.
@@ -171,7 +173,7 @@ func (s *Service) serve(w http.ResponseWriter, r *http.Request) {
 		s.restore(w, r, sp)
 		return
 	}
-	own, err := s.space(sp.Own, true)
+	own, err := s.space(r.Context(), sp.Own, sp.Org, true)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "the cache is not available")
 		return
@@ -198,7 +200,7 @@ func (s *Service) restore(w http.ResponseWriter, r *http.Request, sp Space) {
 			continue
 		}
 		// A space nobody has written to is not made for a lookup.
-		found, err := s.space(id, id == sp.Own)
+		found, err := s.space(r.Context(), id, sp.Org, id == sp.Own)
 		if err != nil {
 			jsonError(w, http.StatusInternalServerError, "the cache is not available")
 			return
@@ -221,13 +223,29 @@ func (s *Service) restore(w http.ResponseWriter, r *http.Request, sp Space) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// space returns the service of a space, making it if create is set or its
-// index is already on disk (nil, nil when it has never been written).
-func (s *Service) space(id string, create bool) (*space, error) {
+// space returns the service of a space, made if create is set or its index is
+// already on disk (nil, nil when it has never been written). The objects go
+// to the bucket the organization has (S3For), else to Dir; when that changes
+// the space is made again on the new one: its index then names objects that
+// are not there, and an entry whose object has vanished is dropped when it is
+// looked up.
+func (s *Service) space(ctx context.Context, id, org string, create bool) (*space, error) {
+	var bucket *blob.S3Config
+	version := "disk"
+	if s.cfg.S3For != nil && org != "" {
+		var err error
+		if bucket, version, err = s.cfg.S3For(ctx, org); err != nil {
+			return nil, err
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if sp, ok := s.spaces[id]; ok {
-		return sp, nil
+		if sp.version == version {
+			return sp, nil
+		}
+		sp.close()
+		delete(s.spaces, id)
 	}
 	dir := filepath.Join(s.cfg.Dir, "cache", filepath.FromSlash(id))
 	if !create {
@@ -235,21 +253,30 @@ func (s *Service) space(id string, create bool) (*space, error) {
 			return nil, nil
 		}
 	}
-	sp, err := s.open(id, dir)
+	sp, err := s.open(id, dir, bucket)
 	if err != nil {
 		return nil, err
 	}
+	sp.version = version
 	s.spaces[id] = sp
 	return sp, nil
 }
 
-func (s *Service) open(id, dir string) (*space, error) {
+// peek is the space as it is now, if it is made; the links to objects in Dir
+// need no organization.
+func (s *Service) peek(id string) *space {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.spaces[id]
+}
+
+func (s *Service) open(id, dir string, bucket *blob.S3Config) (*space, error) {
 	var store blob.Store
 	var free func() (int64, error)
 	sp := &space{}
 	closers := []func(){}
-	if s.cfg.S3 != nil {
-		c := *s.cfg.S3
+	if bucket != nil {
+		c := *bucket
 		c.Prefix += "cache/" + id + "/"
 		b, err := blob.NewS3(c)
 		if err != nil {
@@ -297,8 +324,8 @@ func (s *Service) download(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	sp, err := s.space(parts[0]+"/"+parts[1], false)
-	if err != nil || sp == nil || sp.dl == nil {
+	sp := s.peek(parts[0] + "/" + parts[1])
+	if sp == nil || sp.dl == nil {
 		http.NotFound(w, r)
 		return
 	}

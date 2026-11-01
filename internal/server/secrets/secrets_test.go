@@ -125,6 +125,22 @@ func TestASecretThatCannotBeOpenedIsLeftOutWithAWarningThatHasNoValue(t *testing
 	}
 }
 
+func TestWhatTheServerKeepsForItselfIsNeverGivenToARun(t *testing.T) {
+	s, st := newService(t)
+	ctx := context.Background()
+	keyID, sealed, _ := s.Vault.Seal("org:acme", "DEPLOY_TOKEN", []byte("bucket keys"))
+	st.PutSecret(ctx, store.Secret{Scope: "org:acme", Name: "DEPLOY_TOKEN", Kind: store.KindStorage, KeyID: keyID, Value: sealed})
+	run, err := s.ForRun(ctx, "acme/web", wfText, false)
+	if err != nil || len(run.Secrets) != 0 || len(run.Vars) != 0 {
+		t.Fatalf("a storage setting reached a run: %v %v, %v", run.Secrets, run.Vars, err)
+	}
+	for _, kind := range []string{store.KindSecret, store.KindVar} {
+		if list, _ := s.List(ctx, "org:acme", kind); len(list) != 0 {
+			t.Fatalf("a storage setting listed as %s: %+v", kind, list)
+		}
+	}
+}
+
 func TestBadScopesNamesAndValuesAreRefused(t *testing.T) {
 	s, _ := newService(t)
 	ctx := context.Background()

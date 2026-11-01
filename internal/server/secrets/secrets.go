@@ -203,9 +203,12 @@ func (s *Service) ForRun(ctx context.Context, repo, workflowText string, fork bo
 			return Run{}, err
 		}
 		for _, sec := range list {
-			if sec.Kind == store.KindVar {
+			// Only these two kinds are a workflow's to use: what the server keeps
+			// under the same scope for itself (an organization's bucket) never goes.
+			switch sec.Kind {
+			case store.KindVar:
 				out.Vars[sec.Name] = string(sec.Value)
-			} else {
+			case store.KindSecret:
 				bySecret[sec.Name] = sec
 			}
 		}

@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"raccoonci/internal/blob"
 	"raccoonci/internal/server/secrets"
+	"raccoonci/internal/server/storage"
 	"raccoonci/internal/server/store"
 	"raccoonci/internal/server/vault"
 )
@@ -94,6 +97,69 @@ func TestBadSecretRequestsAreRefusedWithoutEchoingTheValue(t *testing.T) {
 		if rec := call(a.Handler(), p[0], p[1], token, `{}`); rec.Code != 503 {
 			t.Errorf("%v without a vault: %d", p, rec.Code)
 		}
+	}
+}
+
+func TestAnOrganizationsBucketIsTriedKeptSealedAndNeverReadBack(t *testing.T) {
+	a, st := secretsAPI(t)
+	var tried []blob.S3Config
+	var fail error
+	v, _ := vault.New(map[string][]byte{"1": bytes.Repeat([]byte{1}, 32)}, "1")
+	a.Storage = &storage.Service{Store: st, Vault: v, Check: func(_ context.Context, c blob.S3Config) ([]string, error) {
+		tried = append(tried, c)
+		return []string{"the bucket gives its objects to anyone"}, fail
+	}}
+	h := a.Handler()
+	body := `{"org":"Acme","bucket":"acme-ci","endpoint":"https://x.r2.cloudflarestorage.com","region":"auto","access_key":"AKIAEXAMPLE","secret_key":"very-secret-key-material"}`
+	rec := call(h, "PUT", "/v1/storage", token, body)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "anyone") || strings.Contains(rec.Body.String(), "very-secret") {
+		t.Fatalf("put: %d %s", rec.Code, rec.Body)
+	}
+	if len(tried) != 1 || tried[0].Bucket != "acme-ci" || tried[0].SecretKey != "very-secret-key-material" {
+		t.Fatalf("tried %+v", tried)
+	}
+	rec = call(h, "GET", "/v1/storage?org=acme", token, "")
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"configured":true`) || !strings.Contains(rec.Body.String(), "acme-ci") ||
+		strings.Contains(rec.Body.String(), "very-secret") || strings.Contains(rec.Body.String(), "AKIAEXAMPLE") {
+		t.Fatalf("get: %d %s: the keys must never be read back", rec.Code, rec.Body)
+	}
+	// It is not among the organization's secrets.
+	if rec := call(h, "GET", "/v1/secrets?scope=org:acme", token, ""); strings.Contains(rec.Body.String(), "STORAGE") || strings.Contains(rec.Body.String(), "acme-ci") {
+		t.Fatalf("the bucket's settings are listed as a secret: %s", rec.Body)
+	}
+	// A bucket that does not work is refused and not kept.
+	fail = errors.New("writing an object: access denied")
+	rec = call(h, "PUT", "/v1/storage", token, strings.ReplaceAll(body, "acme-ci", "broken-bucket"))
+	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "access denied") || strings.Contains(rec.Body.String(), "very-secret") {
+		t.Fatalf("a broken bucket: %d %s", rec.Code, rec.Body)
+	}
+	if rec := call(h, "GET", "/v1/storage?org=acme", token, ""); !strings.Contains(rec.Body.String(), "acme-ci") {
+		t.Fatalf("the earlier settings were lost: %s", rec.Body)
+	}
+	for _, b := range []string{`junk`, `{"org":"acme","bucket":"x","extra":1}`, `{"org":"acme","bucket":"","access_key":"a","secret_key":"b"}`} {
+		if rec := call(h, "PUT", "/v1/storage", token, b); rec.Code != 400 {
+			t.Errorf("%s: %d", b, rec.Code)
+		}
+	}
+	if rec := call(h, "DELETE", "/v1/storage?org=acme", token, ""); rec.Code != 204 {
+		t.Fatalf("delete: %d", rec.Code)
+	}
+	if rec := call(h, "DELETE", "/v1/storage?org=acme", token, ""); rec.Code != 404 {
+		t.Fatalf("delete twice: %d", rec.Code)
+	}
+	if rec := call(h, "GET", "/v1/storage?org=acme", token, ""); !strings.Contains(rec.Body.String(), `"configured":false`) {
+		t.Fatalf("after delete: %s", rec.Body)
+	}
+	// Only an admin touches it; without a vault it is off.
+	read := call(h, "POST", "/v1/tokens", token, `{"name":"r","role":"read"}`)
+	var made struct{ Token string }
+	json.Unmarshal(read.Body.Bytes(), &made)
+	if rec := call(h, "GET", "/v1/storage?org=acme", made.Token, ""); rec.Code != 403 {
+		t.Fatalf("read token: %d", rec.Code)
+	}
+	a.Storage = nil
+	if rec := call(a.Handler(), "GET", "/v1/storage?org=acme", token, ""); rec.Code != 503 {
+		t.Fatalf("no vault: %d", rec.Code)
 	}
 }
 

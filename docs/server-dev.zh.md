@@ -94,7 +94,17 @@ run 会在它所跑的提交上设置 commit status `raccoonci / <workflow 名>`
 - 不同仓库之间永远不共用。和 GitHub 不同的是，pull request 不能从它的目标分支恢复，除非目标分支就是默认分支。
 - 每个空间的上限是 `-cache-limit-gb`（默认 5），超了就淘汰最久没用的条目。没人再用的空间还不会被删除，上限是按空间算的，不是按仓库。
 
-对象（artifact 和缓存）放在 `-data-dir` 下的目录里，或者放在用户自己提供的桶里：`-storage-s3-bucket B [-storage-s3-endpoint URL] [-storage-s3-region R] [-storage-s3-prefix P] [-storage-s3-path-style]`，加上 `RACCOONCI_STORAGE_S3_KEY` 和 `RACCOONCI_STORAGE_S3_SECRET`。用 Cloudflare R2 的话：endpoint 是 `https://<账号 id>.r2.cloudflarestorage.com`，region 填 `auto`。启动时会试一遍这个桶（写入、通过预签名链接读回、删除），桶不能用就拒绝启动；如果桶不用凭证就把对象给任何人，会在日志里警告。桶要保持私有。下载是直接指向桶的预签名链接，上传仍然经过服务端。现在整个服务端用一个桶，每个组织一个桶要等密钥存储做好。
+对象（artifact 和缓存）放在 `-data-dir` 下的目录里，或者放在用户自己提供的桶里：`-storage-s3-bucket B [-storage-s3-endpoint URL] [-storage-s3-region R] [-storage-s3-prefix P] [-storage-s3-path-style]`，加上 `RACCOONCI_STORAGE_S3_KEY` 和 `RACCOONCI_STORAGE_S3_SECRET`。用 Cloudflare R2 的话：endpoint 是 `https://<账号 id>.r2.cloudflarestorage.com`，region 填 `auto`。启动时会试一遍这个桶（写入、通过预签名链接读回、删除），桶不能用就拒绝启动；如果桶不用凭证就把对象给任何人，会在日志里警告。桶要保持私有。下载是直接指向桶的预签名链接，上传仍然经过服务端。这个桶是服务端自己的，给没有自己的桶的组织用。
+
+**每个组织一个桶**（正式使用时用户这么做）：admin 通过 API 给出，之后这个组织各仓库的 artifact 和缓存就放进它的桶，不再进服务端的。
+
+```sh
+PUT    /v1/storage  {"org":"acme","bucket":"acme-ci","endpoint":"https://<账号>.r2.cloudflarestorage.com","region":"auto","prefix":"raccoon","access_key":"…","secret_key":"…"}
+GET    /v1/storage?org=acme        # 在哪里，但不返回密钥
+DELETE /v1/storage?org=acme        # 回到服务端自己的存储
+```
+
+保存设置之前会先试这个桶（写入、通过预签名链接读回、删除）：不能用的桶会被拒绝，并说明是哪一步失败；任何人都能读的桶会保存下来并给出警告。设置和密钥用主密钥加密，放在只有服务端读的一行里：workflow 引用不到它，密钥 API 也不能列出、覆盖或删除它。换桶之后，新的 artifact 和缓存进新桶；旧桶里的留在原处，对象不在新桶里的缓存条目在被查找时会被丢弃。需要主密钥。有自己桶的组织，它的 artifact 和缓存由按需创建的单独服务处理。
 
 ## 现在的 run 是什么样
 

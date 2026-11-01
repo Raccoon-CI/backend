@@ -97,6 +97,9 @@ type LogLine struct {
 const (
 	KindSecret = "secret"
 	KindVar    = "var"
+	// KindStorage is what the server keeps for itself under an organization's
+	// scope (its bucket's settings, sealed); a workflow can never name it.
+	KindStorage = "storage"
 )
 
 // Secret is a secret or a variable of a scope ("org:acme", "repo:acme/web").

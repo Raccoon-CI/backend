@@ -166,6 +166,72 @@ paths:
       responses:
         "204": {description: deleted}
         "404": {$ref: "#/components/responses/Error"}
+  /v1/storage:
+    get:
+      summary: Where an organization's artifacts and caches go (never its keys)
+      parameters:
+        - {name: org, in: query, required: true, schema: {type: string}}
+      responses:
+        "200":
+          description: "`configured` is false while the organization uses the server's own storage"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  configured: {type: boolean}
+                  endpoint: {type: string}
+                  region: {type: string}
+                  bucket: {type: string}
+                  prefix: {type: string}
+                  path_style: {type: boolean}
+        "400": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Error"}
+    put:
+      summary: Give an organization its own bucket (R2, S3, any S3-compatible store)
+      description: |
+        The bucket is tried first: an object is written, read back through a
+        presigned link and deleted; settings of a bucket that does not work are
+        not saved (400, with the step that failed). A bucket that gives its
+        objects to anyone without credentials is saved, with a warning. The keys
+        are sealed and never read back. Objects already in another bucket stay
+        there; new artifacts and caches go to this one.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [org, bucket, access_key, secret_key]
+              properties:
+                org: {type: string}
+                bucket: {type: string}
+                endpoint: {type: string, description: "https; empty for AWS. R2: https://<account id>.r2.cloudflarestorage.com"}
+                region: {type: string, description: "R2: auto"}
+                prefix: {type: string}
+                path_style: {type: boolean}
+                access_key: {type: string}
+                secret_key: {type: string}
+      responses:
+        "200":
+          description: saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  warnings:
+                    type: array
+                    items: {type: string}
+        "400": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Error"}
+    delete:
+      summary: Go back to the server's own storage
+      parameters:
+        - {name: org, in: query, required: true, schema: {type: string}}
+      responses:
+        "204": {description: removed}
+        "404": {$ref: "#/components/responses/Error"}
   /v1/tokens:
     get:
       summary: The API tokens (never the tokens themselves)

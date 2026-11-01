@@ -23,6 +23,9 @@ import (
 type Space struct {
 	Own  string
 	Read []string
+	// Org is the owner of the repository, in lower case: whose bucket the
+	// objects go to.
+	Org string
 }
 
 // hash names a repository or a ref in a path without any of its characters.
@@ -41,11 +44,12 @@ func RepoID(repo string) string { return hash(strings.ToLower(repo)) }
 func SpaceFor(repo, ref, defaultBranch string) Space {
 	r := RepoID(repo)
 	def := r + "/default"
+	org, _, _ := strings.Cut(strings.ToLower(repo), "/")
 	if defaultBranch != "" && ref == "refs/heads/"+defaultBranch {
-		return Space{Own: def, Read: []string{def}}
+		return Space{Own: def, Read: []string{def}, Org: org}
 	}
 	own := r + "/r-" + hash(ref)
-	return Space{Own: own, Read: []string{own, def}}
+	return Space{Own: own, Read: []string{own, def}, Org: org}
 }
 
 // validSpace says whether id has the shape SpaceFor makes, which is all the

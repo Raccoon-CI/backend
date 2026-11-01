@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"raccoonci/internal/artifact"
+	"raccoonci/internal/blob"
 )
 
 func TestSpaceRules(t *testing.T) {
@@ -255,6 +256,37 @@ func TestSpacesAreKeptOnDiskAndSurviveARestart(t *testing.T) {
 	}
 	if got := h.restore(1, "mine"); got != "" {
 		t.Errorf("after a restart the default branch restored %q from a feature branch", got)
+	}
+}
+
+func TestTheOrganizationsBucketIsAskedForAndAFailureMeansNoCache(t *testing.T) {
+	h := newHarness(t)
+	h.run(1, "Acme/Web", "refs/heads/main")
+	var orgs []string
+	version, fail := "v1", error(nil)
+	h.svc.cfg.S3For = func(_ context.Context, org string) (*blob.S3Config, string, error) {
+		orgs = append(orgs, org)
+		return nil, version, fail // no bucket: the objects stay on disk, but the version is followed
+	}
+	if h.save(1, "deps", "kept") != 201 || h.restore(1, "deps") != "kept" {
+		t.Fatal("a save and a restore with a bucket callback")
+	}
+	for _, o := range orgs {
+		if o != "acme" {
+			t.Fatalf("asked for the bucket of %q, want the repository's owner, lower-cased", o)
+		}
+	}
+	first := h.svc.peek(SpaceFor("Acme/Web", "refs/heads/main", "main").Own)
+	version = "v2" // the organization changed its bucket
+	if h.restore(1, "deps") != "kept" {
+		t.Fatal("the entry is gone after the version changed on the same disk")
+	}
+	if now := h.svc.peek(SpaceFor("Acme/Web", "refs/heads/main", "main").Own); now == first || now.version != "v2" {
+		t.Fatal("the space was not made again for the new version")
+	}
+	fail = errors.New("the settings cannot be opened")
+	if code, _ := h.do("GET", "cache?keys=deps&version=v1", h.token(1), nil, nil); code != 500 {
+		t.Fatalf("a bucket that cannot be had: %d, want 500 (and never a quiet fall back to the server's disk)", code)
 	}
 }
 

@@ -40,6 +40,9 @@ type API struct {
 	// Secrets keeps the secrets and variables behind /v1/secrets and /v1/vars;
 	// nil switches those routes off.
 	Secrets SecretsAdmin
+	// Storage keeps each organization's bucket behind /v1/storage; nil
+	// switches those routes off.
+	Storage StorageAdmin
 	// Token is the bootstrap token: it has the admin role and is how the
 	// first tokens are made. Tokens made through the API live in Store. With
 	// neither, the API is closed (503).
@@ -105,6 +108,9 @@ func (a *API) routes() []route {
 		{"GET /v1/vars", a.listSecrets(store.KindVar), admin},
 		{"PUT /v1/vars", a.putSecret(store.KindVar), admin},
 		{"DELETE /v1/vars", a.deleteSecret(store.KindVar), admin},
+		{"GET /v1/storage", a.getStorage, admin},
+		{"PUT /v1/storage", a.putStorage, admin},
+		{"DELETE /v1/storage", a.deleteStorage, admin},
 		{"GET /v1/tokens", a.listTokens, admin},
 		{"POST /v1/tokens", a.createToken, admin},
 		{"DELETE /v1/tokens/{id}", a.revokeToken, admin},
