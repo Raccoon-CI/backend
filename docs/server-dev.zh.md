@@ -95,7 +95,7 @@ run 会在它所跑的提交上设置 commit status `raccoonci / <workflow 名>`
 
 ## 并发组
 
-workflow 的 `concurrency:`（一个组名，或带 `cancel-in-progress` 的 `group`；表达式可用 `github`、`inputs`、`vars`）按仓库生效，组名不分大小写。一个组里同时只有一个 run 在跑、一个在等：组被占用时到来的 run 要等（日志写 `waiting for run N`），后面又来一个时，在等的那个被取消（`a newer run of the same concurrency group replaced this one`），和 GitHub 一样。`cancel-in-progress` 为真时，组里正在跑的 run 立刻被取消。被取消的等待者会让出位置。源码在等待结束之后才取。限制：只支持 workflow 级的键（job 级的 `concurrency:` 会解析但不生效）；状态在服务进程内存里（单实例，重启后所有 run 重新进组）；等待中的 run 占着 `MaxRuns` 的一个名额；只用假机器测过。
+workflow 的 `concurrency:`（一个组名，或带 `cancel-in-progress` 的 `group`；表达式可用 `github`、`inputs`、`vars`）按仓库生效，组名不分大小写。一个组里同时只有一个 run 在跑、一个在等：组被占用时到来的 run 要等（日志写 `waiting for run N`），后面又来一个时，在等的那个被取消（`a newer run of the same concurrency group replaced this one`），和 GitHub 一样。`cancel-in-progress` 为真时，组里正在跑的 run 立刻被取消。被取消的等待者会让出位置。源码在等待结束之后才取。限制：只支持 workflow 级的键（job 级的 `concurrency:` 会解析但不生效）；状态在服务进程内存里（单实例，重启后所有 run 重新进组）；只用假机器测过。等待并发组的 run 不占执行器的名额（`MaxRuns`），所以同一个组里一串 push 不会挡住别的 run。
 
 ## 起机限额
 

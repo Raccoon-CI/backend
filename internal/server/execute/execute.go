@@ -158,6 +158,8 @@ type Executor struct {
 
 	gmu    sync.Mutex
 	groups map[string]*cgroup // workflow-level concurrency groups, see concurrency.go
+
+	slots chan struct{} // the runs that may execute at once (Run); a run waiting for a concurrency group gives its place up
 }
 
 func (e *Executor) log() *slog.Logger {
@@ -209,6 +211,7 @@ func (e *Executor) Run(ctx context.Context) error {
 		poll = 2 * time.Second
 	}
 	slots := make(chan struct{}, maxRuns)
+	e.slots = slots
 	warned := false
 	for {
 		for ctx.Err() == nil {

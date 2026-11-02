@@ -199,6 +199,32 @@ func TestAWaitingRunThatIsCancelledLeavesTheGroupAlone(t *testing.T) {
 	}
 }
 
+func TestARunWaitingForItsGroupDoesNotHoldAPlaceOfTheExecutor(t *testing.T) {
+	e := newEnv(t)
+	m := &gateMachine{gate: make(chan struct{})}
+	e.ex.Machine = m
+	e.ex.MaxRuns = 2 // the running run and the waiting one would fill it
+	e.start(t)
+	a := e.queue(t, "a", grouped, onRef("main"))
+	waitFor(t, "the first job on a machine", func() bool { return m.calls() == 1 })
+	b := e.queue(t, "b", grouped, onRef("main"))
+	waitFor(t, "b waiting", func() bool { return logHas(e, t, b.ID, "waiting for run") })
+	// A third run, of another group, still gets the second place.
+	c := e.queue(t, "c", grouped, onRef("dev"))
+	if r := e.wait(t, c.ID); r.Conclusion != "success" {
+		t.Fatalf("c: %q (the waiting run held a place)", r.Conclusion)
+	}
+	// And a fourth waiter does not stop things either.
+	d := e.queue(t, "d", grouped, onRef("main"))
+	waitFor(t, "d replaces b", func() bool { return logHas(e, t, b.ID, "newer run of the same concurrency group") })
+	close(m.gate)
+	e.wait(t, a.ID)
+	if r := e.wait(t, d.ID); r.Conclusion != "success" {
+		t.Fatalf("d: %q", r.Conclusion)
+	}
+	e.wait(t, b.ID)
+}
+
 func TestABadConcurrencyGroupFailsTheRunWithAMessage(t *testing.T) {
 	e, _ := newGateEnv(t)
 	bad := strings.Replace(grouped, "deploy-${{ github.ref_name }}", "${{ nope.x }}", 1)

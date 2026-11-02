@@ -110,6 +110,12 @@ func (e *Executor) enterGroup(ctx context.Context, repo, group string, runID int
 		sink.Add(runner.Event{Kind: runner.Notice, Time: time.Now(),
 			Text: fmt.Sprintf("concurrency group %q: waiting for run %d, which is in it", group, holder)})
 	}
+	// A run that only waits must not hold one of the executor's places: with
+	// every push in one group, a few waiters would stop all other runs.
+	yielded := e.yieldSlot()
+	if yielded {
+		defer e.takeSlot()
+	}
 	select {
 	case ok := <-me.ch:
 		if !ok {
@@ -135,6 +141,26 @@ func (e *Executor) enterGroup(ctx context.Context, repo, group string, runID int
 		return nil, ctx.Err()
 	}
 }
+
+// yieldSlot gives up the calling run's place among the runs that execute at
+// once, and wakes the executor so that it takes another run in it. It reports
+// whether there was a place to give up (not when the executor is not running
+// the loop, as in a test of the group alone).
+func (e *Executor) yieldSlot() bool {
+	if e.slots == nil {
+		return false
+	}
+	select {
+	case <-e.slots:
+		e.Wake()
+		return true
+	default:
+		return false
+	}
+}
+
+// takeSlot gets a place back after yieldSlot; it waits for one to be free.
+func (e *Executor) takeSlot() { e.slots <- struct{}{} }
 
 // leaveGroup hands the group to the run waiting for it, if any.
 func (e *Executor) leaveGroup(key string, runID int64) {
