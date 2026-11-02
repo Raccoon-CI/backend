@@ -191,6 +191,11 @@ type Store interface {
 	// second run.
 	CreateRun(ctx context.Context, r Run) (stored Run, created bool, err error)
 	GetRun(ctx context.Context, id int64) (Run, error)
+	// RunNumbers gives a run its github.run_number and github.run_attempt as
+	// GitHub counts them: the number counts the workflow's runs started by an
+	// event (not reruns) up to and including the run, or the one it repeats;
+	// the attempt is 1 for that run and one more for each rerun of it.
+	RunNumbers(ctx context.Context, run Run) (number, attempt int, err error)
 	ListRuns(ctx context.Context, f RunFilter) ([]Run, error)
 
 	// ClaimRun takes the oldest queued run and marks it in progress, so that

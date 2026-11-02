@@ -902,19 +902,19 @@ func TestOnlyMaxRunsRunAtOnce(t *testing.T) {
 func TestGithubContext(t *testing.T) {
 	get := func(o value.Object, k string) any { v, _ := o.Get(k); return v }
 	push := githubContext(store.Run{ID: 9, Repo: "acme/web", WorkflowPath: ".github/workflows/ci.yml", WorkflowName: "CI", Event: "push",
-		Ref: "refs/heads/feature/x", SHA: "abc", Actor: "alice"}, value.Object{})
+		Ref: "refs/heads/feature/x", SHA: "abc", Actor: "alice"}, value.Object{}, 4, 2)
 	for k, want := range map[string]string{"event_name": "push", "ref_name": "feature/x", "ref_type": "branch", "repository_owner": "acme",
-		"run_id": "9", "workflow": "CI", "workflow_ref": "acme/web/.github/workflows/ci.yml@refs/heads/feature/x", "actor": "alice", "head_ref": ""} {
+		"run_id": "9", "run_number": "4", "run_attempt": "2", "workflow": "CI", "workflow_ref": "acme/web/.github/workflows/ci.yml@refs/heads/feature/x", "actor": "alice", "head_ref": ""} {
 		if got := get(push, k); got != want {
 			t.Errorf("push %s = %v, want %q", k, got, want)
 		}
 	}
-	tag := githubContext(store.Run{Repo: "a/b", Ref: "refs/tags/v1.0", Event: "push", WorkflowPath: "w.yml"}, value.Object{})
+	tag := githubContext(store.Run{Repo: "a/b", Ref: "refs/tags/v1.0", Event: "push", WorkflowPath: "w.yml"}, value.Object{}, 1, 1)
 	if get(tag, "ref_type") != "tag" || get(tag, "ref_name") != "v1.0" || get(tag, "workflow") != "w.yml" {
 		t.Errorf("tag = %v %v %v", get(tag, "ref_type"), get(tag, "ref_name"), get(tag, "workflow"))
 	}
 	payload, _ := value.FromJSON([]byte(`{"pull_request":{"head":{"ref":"feature"},"base":{"ref":"main"}}}`))
-	pr := githubContext(store.Run{Repo: "a/b", Ref: "refs/pull/7/merge", Event: "pull_request", PullRequest: 7}, payload.(value.Object))
+	pr := githubContext(store.Run{Repo: "a/b", Ref: "refs/pull/7/merge", Event: "pull_request", PullRequest: 7}, payload.(value.Object), 1, 1)
 	if get(pr, "head_ref") != "feature" || get(pr, "base_ref") != "main" || get(pr, "ref_name") != "7/merge" {
 		t.Errorf("pr = head %v base %v ref_name %v", get(pr, "head_ref"), get(pr, "base_ref"), get(pr, "ref_name"))
 	}

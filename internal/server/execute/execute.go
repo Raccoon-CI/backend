@@ -467,12 +467,16 @@ func (e *Executor) prepare(ctx context.Context, run store.Run, sink *sink) (*exe
 			sink.Add(runner.Event{Kind: runner.Notice, Time: time.Now(), Text: "this run is for a pull request from another repository: it gets no secrets"})
 		}
 	}
+	number, attempt, err := e.Store.RunNumbers(ctx, run)
+	if err != nil {
+		return nil, fmt.Errorf("numbering the run: %w", err)
+	}
 	dir := filepath.Join(e.WorkDir, fmt.Sprintf("run-%d", run.ID))
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
 	x := &execution{e: e, run: run, log: e.log().With("run", run.ID), sink: sink, w: w, inputs: inputs, images: images, dir: dir,
-		github: githubContext(run, payload), maxParallel: e.MaxParallel, secrets: secretValues, vars: vars,
+		github: githubContext(run, payload, number, attempt), maxParallel: e.MaxParallel, secrets: secretValues, vars: vars,
 		installation: ev.InstallationID}
 	if x.maxParallel < 1 {
 		x.maxParallel = 8
@@ -666,7 +670,7 @@ func orEmpty(o value.Object) value.Object {
 // githubContext builds the github context of a run from what is stored. The
 // commit is the one the event is about: for a pull request its head (GitHub
 // itself gives the merge commit; the server does not make one yet).
-func githubContext(run store.Run, payload value.Object) value.Object {
+func githubContext(run store.Run, payload value.Object, number, attempt int) value.Object {
 	owner, _, _ := strings.Cut(run.Repo, "/")
 	refType, refName := "branch", run.Ref
 	switch {
@@ -704,8 +708,8 @@ func githubContext(run store.Run, payload value.Object) value.Object {
 		{Key: "workflow_ref", Value: run.Repo + "/" + run.WorkflowPath + "@" + run.Ref},
 		{Key: "workflow_sha", Value: run.SHA},
 		{Key: "run_id", Value: id},
-		{Key: "run_number", Value: id},
-		{Key: "run_attempt", Value: "1"},
+		{Key: "run_number", Value: strconv.Itoa(number)},
+		{Key: "run_attempt", Value: strconv.Itoa(attempt)},
 		{Key: "retention_days", Value: "90"},
 		{Key: "server_url", Value: "https://github.com"},
 		{Key: "api_url", Value: "https://api.github.com"},

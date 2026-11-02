@@ -151,7 +151,7 @@ The bucket is tried before its settings are kept (write, read back through a pre
 - The commit is the one the event is about. For a `pull_request` run the source is GitHub's merge of the head into the base (`refs/pull/N/merge`, as GitHub's own runners see it); the ref appears a moment after the event, so it is asked for up to 4 times, 2 s apart, and when it never comes (the two conflict) the **head** is run instead and the log says so. The `github.sha` value is still the head commit, not the merge commit's id.
 - The source comes from GitHub's archive of the commit: no `.git` directory, no history.
 - `secrets.GITHUB_TOKEN` is empty. Artifacts and caches work (see the next sections).
-- `github.run_number` is the run id.
+- `github.run_number` counts the workflow's runs started by an event, as on GitHub (per repository and workflow file); a rerun keeps the number of the run it repeats and raises `github.run_attempt` (1, 2, ...). `github.run_id` is the server's run id (a rerun has a new one, unlike GitHub).
 
 ## Checked so far
 

@@ -151,7 +151,7 @@ DELETE /v1/storage?org=acme        # 回到服务端自己的存储
 - 提交是事件所指的那个。`pull_request` 的 run 用的源码是 GitHub 把头合并进基分支的结果（`refs/pull/N/merge`，和 GitHub 自己的 runner 看到的一样）；这个 ref 在事件之后过一会儿才出现，所以最多问 4 次、每次隔 2 秒，一直没有（两者冲突）就改跑**头提交**，日志里会写明。`github.sha` 仍是头提交，不是合并提交的 id。
 - 源码来自 GitHub 对该提交的归档：没有 `.git` 目录，没有历史。
 - `secrets.GITHUB_TOKEN` 是空的。artifact 和 cache 可用（见后面几节）。
-- `github.run_number` 就是 run 的 id。
+- `github.run_number` 和 GitHub 一样按 workflow 数事件启动的 run（每个仓库、每个 workflow 文件各数各的）；重跑沿用被重跑那个 run 的编号，`github.run_attempt` 加一（1、2……）。`github.run_id` 是服务端的 run id（和 GitHub 不同，重跑会有新的 id）。
 
 ## 目前验证过的
 
