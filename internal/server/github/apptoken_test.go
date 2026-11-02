@@ -43,6 +43,32 @@ func TestRunTokenAsksForOneRepositoryWithTheGivenPermissionsOnly(t *testing.T) {
 	}
 }
 
+func TestRevokeTokenUsesTheTokenItselfAndAGoneTokenCountsAsRevoked(t *testing.T) {
+	status := http.StatusNoContent
+	var auth, method, path string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth, method, path = r.Header.Get("Authorization"), r.Method, r.URL.Path
+		w.WriteHeader(status)
+	}))
+	defer srv.Close()
+	app := &App{ID: 1, Key: newKey(t), Base: srv.URL}
+	if err := app.RevokeToken(context.Background(), "ghs_x"); err != nil {
+		t.Fatal(err)
+	}
+	if auth != "Bearer ghs_x" || method != "DELETE" || path != "/installation/token" {
+		t.Fatalf("%s %s with %q", method, path, auth)
+	}
+	status = http.StatusUnauthorized // already expired or revoked
+	if err := app.RevokeToken(context.Background(), "ghs_x"); err != nil {
+		t.Fatalf("a token that is gone is revoked: %v", err)
+	}
+	status = http.StatusInternalServerError
+	err := app.RevokeToken(context.Background(), "ghs_x")
+	if err == nil || strings.Contains(err.Error(), "ghs_x") {
+		t.Fatalf("err = %v (it must fail, and never name the token)", err)
+	}
+}
+
 func TestRunTokenRefusalsAreErrorsWithoutACredential(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(422)

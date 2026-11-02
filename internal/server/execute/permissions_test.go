@@ -70,8 +70,16 @@ type fakeMinter struct {
 	mu    sync.Mutex
 	asked []map[string]string
 	// refuse says which permission sets fail: a set holding this key fails.
-	refuse string
-	all    bool
+	refuse  string
+	all     bool
+	revoked []string
+}
+
+func (f *fakeMinter) RevokeToken(_ context.Context, token string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.revoked = append(f.revoked, token)
+	return nil
 }
 
 func (f *fakeMinter) RunToken(_ context.Context, inst int64, repo string, perms map[string]string) (string, error) {
@@ -116,6 +124,14 @@ func TestEachJobGetsAScopedGithubToken(t *testing.T) {
 	}
 	if len(mint.asked) != 1 || mint.asked[0]["issues"] != "write" {
 		t.Fatalf("asked for %v", mint.asked)
+	}
+	waitFor(t, "the token to be revoked", func() bool {
+		mint.mu.Lock()
+		defer mint.mu.Unlock()
+		return len(mint.revoked) == 1
+	})
+	if mint.revoked[0] != "ghs_job_acme/web" {
+		t.Fatalf("revoked %v", mint.revoked)
 	}
 	for _, ev := range e.log(t, run.ID) {
 		if strings.Contains(ev.Text, "ghs_job") {

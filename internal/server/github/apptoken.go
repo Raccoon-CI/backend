@@ -12,6 +12,37 @@ import (
 	"time"
 )
 
+// RevokeToken ends an installation token (DELETE /installation/token, which
+// is authenticated by the token itself). A token that is already gone (401)
+// counts as revoked.
+func (a *App) RevokeToken(ctx context.Context, token string) error {
+	base := a.Base
+	if base == "" {
+		base = "https://api.github.com"
+	}
+	req, err := http.NewRequestWithContext(ctx, "DELETE", base+"/installation/token", nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	h := a.HTTP
+	if h == nil {
+		h = &http.Client{Timeout: 30 * time.Second}
+	}
+	resp, err := h.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusUnauthorized {
+		return nil
+	}
+	return fmt.Errorf("github: revoking a token: %s", resp.Status)
+}
+
 // RunToken makes an installation token for one repository with only the
 // permissions given ("contents": "read", ...), for a job to use as its
 // GITHUB_TOKEN. It is not cached: every job gets a token of its own, which

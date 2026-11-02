@@ -11,6 +11,8 @@ import (
 // a repository, limited to the permissions asked for. Its answer is never logged.
 type TokenMinter interface {
 	RunToken(ctx context.Context, installationID int64, repo string, permissions map[string]string) (string, error)
+	// RevokeToken ends a token made by RunToken before it would expire.
+	RevokeToken(ctx context.Context, token string) error
 }
 
 // defaultPermissions is what a job gets when neither it nor its workflow says

@@ -664,10 +664,12 @@ func (x *execution) runInstance(ctx context.Context, inst engine.RemoteInstance)
 	}
 	reader := &wire.Reader{Name: inst.Name, Event: x.sink.Add}
 	defer reader.Flush()
+	secrets, revoke := x.secretsFor(ctx, inst)
+	defer revoke() // the job's GITHUB_TOKEN stops working when the job is over
 	res, err := x.e.Machine.Run(ctx, fmt.Sprintf("rc-r%d-%d", x.run.ID, n), dispatch.Job{
 		Command: "run-instance",
 		Input:   input,
-		Secrets: x.secretsFor(ctx, inst),
+		Secrets: secrets,
 		Source: func(w io.Writer) error {
 			f, err := os.Open(x.sourceTar)
 			if err != nil {
@@ -704,9 +706,10 @@ func (x *execution) runInstance(ctx context.Context, inst engine.RemoteInstance)
 // lacks a permission the job asks for, the job gets the default token and a
 // warning says so; when no token can be made the job runs without and a
 // warning says so (the token itself is never in the log).
-func (x *execution) secretsFor(ctx context.Context, inst engine.RemoteInstance) map[string]string {
+func (x *execution) secretsFor(ctx context.Context, inst engine.RemoteInstance) (secrets map[string]string, revoke func()) {
+	revoke = func() {}
 	if x.e.Tokens == nil || x.installation == 0 || x.run.Fork {
-		return x.secrets
+		return x.secrets, revoke
 	}
 	warn := func(format string, a ...any) {
 		x.sink.Add(runner.Event{Kind: runner.Warning, Time: time.Now(), Job: inst.Name, Text: fmt.Sprintf(format, a...)})
@@ -719,12 +722,20 @@ func (x *execution) secretsFor(ctx context.Context, inst engine.RemoteInstance) 
 	}
 	if err != nil {
 		warn("no GITHUB_TOKEN could be made for this job: %v", err)
-		return x.secrets
+		return x.secrets, revoke
 	}
 	out := make(map[string]string, len(x.secrets)+1)
 	maps.Copy(out, x.secrets)
 	out["GITHUB_TOKEN"] = tok
-	return out
+	return out, func() {
+		// Not with the job's context, which may be cancelled: that is when the
+		// token matters most. A failure only means it expires by itself.
+		rctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := x.e.Tokens.RevokeToken(rctx, tok); err != nil {
+			x.log.Warn("revoking a job's token failed (it expires by itself)", "job", inst.Name, "err", err)
+		}
+	}
 }
 
 func orEmpty(o value.Object) value.Object {
