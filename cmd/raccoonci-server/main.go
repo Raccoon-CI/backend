@@ -22,12 +22,14 @@ import (
 	"raccoonci/internal/blob"
 	"raccoonci/internal/dispatch"
 	"raccoonci/internal/instabox"
+	"raccoonci/internal/runnerimages"
 	"raccoonci/internal/server/api"
 	"raccoonci/internal/server/artifacts"
 	"raccoonci/internal/server/caches"
 	"raccoonci/internal/server/config"
 	"raccoonci/internal/server/execute"
 	"raccoonci/internal/server/github"
+	"raccoonci/internal/server/imagesync"
 	"raccoonci/internal/server/intake"
 	"raccoonci/internal/server/retention"
 	"raccoonci/internal/server/schedule"
@@ -73,6 +75,7 @@ func run(args []string) error {
 	publicURL := fs.String("public-url", "", "the https address the machines reach this server at (their job assignments, artifacts); needed to run jobs")
 	snapshot := fs.String("snapshot", os.Getenv("RACCOONCI_INSTABOX_SNAPSHOT"), "the InstaBox runner snapshot machines start from (env RACCOONCI_INSTABOX_SNAPSHOT); needed to run jobs")
 	status := fs.Bool("status", true, "report each run to GitHub as a commit status (raccoonci / <workflow>) on the commit it ran; the token or App needs to write commit statuses")
+	imagesEvery := fs.Duration("runner-images-interval", 6*time.Hour, "how often to read what GitHub's hosted runner images preinstall (no token needed); runs are planned with the last good data, else the snapshot built into the binary (0 = never poll)")
 	minFreeMB := fs.Int("min-free-mb", 1024, "keep queued runs waiting while the data directory's disk has less than this many MiB free (0 = no check)")
 	maxSourceMB := fs.Int("max-source-mb", 2048, "fail a run whose repository source package is bigger than this many MiB")
 	checks := fs.Bool("checks", true, "with a GitHub App, also make a check run per job (raccoonci / <workflow> / <job>); needs the App's Checks write permission; a plain token cannot, and gets none")
@@ -196,7 +199,7 @@ Secrets are read from the environment, or from the file named by NAME_FILE (mode
 
 	// Execution needs three things together: where machines reach the
 	// server, the runner snapshot to start them from, and the InstaBox key.
-	var executed, janitor, cacheJanitor chan struct{}
+	var executed, janitor, cacheJanitor, imagesDone chan struct{}
 	keep := time.Duration(*artifactDays) * 24 * time.Hour
 	instaboxMode := *publicURL != "" || *snapshot != "" || instaboxKey != ""
 	execution := instaboxMode || *localRunner != ""
@@ -282,6 +285,15 @@ Secrets are read from the environment, or from the file named by NAME_FILE (mode
 		if *status {
 			ex.Reporter = execute.Statuses{GH: gh}
 		}
+		if *imagesEvery > 0 {
+			syncer := &imagesync.Syncer{Store: st, Source: runnerimages.NewFetcher(""), Log: log}
+			ex.Images = syncer.Snapshot
+			imagesDone = make(chan struct{})
+			go func() {
+				defer close(imagesDone)
+				syncer.Run(ctx, *imagesEvery)
+			}()
+		}
 		if *minFreeMB > 0 {
 			ex.MinFreeBytes, ex.Free = int64(*minFreeMB)<<20, execute.DiskFree(*dataDir)
 		}
@@ -361,6 +373,9 @@ Secrets are read from the environment, or from the file named by NAME_FILE (mode
 	}
 	if cacheJanitor != nil {
 		<-cacheJanitor
+	}
+	if imagesDone != nil {
+		<-imagesDone
 	}
 	if executed != nil {
 		<-executed // runs in progress are cancelled and recorded

@@ -98,6 +98,13 @@ type Job struct {
 	CompletedAt time.Time // zero until it ends
 }
 
+// Document is a named blob the server keeps for itself (PutDocument).
+type Document struct {
+	Name      string
+	Data      []byte
+	UpdatedAt time.Time
+}
+
 // LogLine is one entry of a run's log: a runner.Event as JSON.
 type LogLine struct {
 	ID   int64 // set by the store; grows with the order of arrival
@@ -241,6 +248,11 @@ type Store interface {
 	// ExpiredArtifacts returns the artifacts of every scope whose time to keep
 	// has passed, the oldest expiry first.
 	ExpiredArtifacts(ctx context.Context, now time.Time) ([]Artifact, error)
+
+	// PutDocument makes or replaces a named document the server keeps for itself.
+	PutDocument(ctx context.Context, name string, data []byte) error
+	// GetDocument returns one; ErrNotFound when there is none.
+	GetDocument(ctx context.Context, name string) (Document, error)
 
 	// CreateToken records a token by the SHA-256 (hex) of its value.
 	CreateToken(ctx context.Context, name, role, hash string) (APIToken, error)

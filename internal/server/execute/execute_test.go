@@ -16,6 +16,7 @@ import (
 
 	"raccoonci/internal/dispatch"
 	"raccoonci/internal/runner"
+	"raccoonci/internal/runnerimages"
 	"raccoonci/internal/server/github"
 	"raccoonci/internal/server/secrets"
 	"raccoonci/internal/server/store"
@@ -223,6 +224,29 @@ func TestRunsWaitWhileTheDiskIsNearlyFullAndGoOnWhenSpaceReturns(t *testing.T) {
 	mu.Unlock()
 	if done := e.wait(t, run.ID); done.Conclusion != "success" {
 		t.Fatalf("conclusion %q", done.Conclusion)
+	}
+}
+
+func TestARunIsPlannedWithTheImagesTheServerPolledAndSurvivesAnUnreadableOne(t *testing.T) {
+	e := newEnv(t)
+	var asked int
+	e.ex.Images = func(context.Context) (*runnerimages.Snapshot, error) {
+		asked++
+		snap, err := runnerimages.Embedded()
+		if asked == 1 {
+			return snap, err
+		}
+		return snap, errors.New("the database could not be read") // still a usable snapshot
+	}
+	e.start(t)
+	for i, d := range []string{"img1", "img2"} {
+		run := e.queue(t, d, twoJobs, nil)
+		if done := e.wait(t, run.ID); done.Conclusion != "success" {
+			t.Fatalf("run %d: conclusion %q", i, done.Conclusion)
+		}
+	}
+	if asked != 2 {
+		t.Fatalf("Images was asked %d times, want once per run", asked)
 	}
 }
 

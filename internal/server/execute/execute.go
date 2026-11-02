@@ -129,6 +129,9 @@ type Executor struct {
 	// work directory's disk has less than this available (0 = no check).
 	MinFreeBytes int64
 	Free         func() (int64, error)
+	// Images, if set, gives the runner-images snapshot a run is planned with
+	// (default: the one compiled in).
+	Images func(ctx context.Context) (*runnerimages.Snapshot, error)
 	// MaxSourceBytes caps the source package fetched for one run (default 2 GiB).
 	MaxSourceBytes int64
 	// Reporter, if set, is told when a run starts and how it ended.
@@ -323,6 +326,23 @@ func (e *Executor) execute(parent context.Context, run store.Run) {
 	}
 }
 
+// runnerImages is what the hosted images preinstall: Images' answer, or the
+// snapshot compiled in. When Images fails but still returns a snapshot (the
+// database could not be read) that one is used and the failure is logged.
+func (e *Executor) runnerImages(ctx context.Context) (*runnerimages.Snapshot, error) {
+	if e.Images == nil {
+		return runnerimages.Embedded()
+	}
+	snap, err := e.Images(ctx)
+	if err != nil {
+		if snap == nil {
+			return nil, err
+		}
+		e.log().Warn("the polled runner-images data could not be read; using the built-in snapshot", "err", err)
+	}
+	return snap, nil
+}
+
 // Reporter tells GitHub how a run is going (a commit status, or a check run).
 type Reporter interface {
 	Report(ctx context.Context, installationID int64, run store.Run, state, description string) error
@@ -417,7 +437,7 @@ func (e *Executor) prepare(ctx context.Context, run store.Run, sink *sink) (*exe
 	if err != nil {
 		return nil, fmt.Errorf("the event's payload: %w", err)
 	}
-	images, err := runnerimages.Embedded()
+	images, err := e.runnerImages(ctx)
 	if err != nil {
 		return nil, err
 	}
