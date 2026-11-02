@@ -208,8 +208,12 @@ type Store interface {
 	RunNumbers(ctx context.Context, run Run) (number, attempt int, err error)
 	ListRuns(ctx context.Context, f RunFilter) ([]Run, error)
 
-	// ClaimRun takes the oldest queued run and marks it in progress, so that
-	// two callers never get the same one. ok is false when none is queued.
+	// ClaimRun takes the next queued run and marks it in progress, so that two
+	// callers never get the same one. The next one is fair between repositories:
+	// of the queued runs, the one whose repository has the fewest runs in
+	// progress, the oldest among equals. A repository with a long queue cannot
+	// starve the others, and one alone still gets everything. ok is false when
+	// none is queued.
 	ClaimRun(ctx context.Context) (run Run, ok bool, err error)
 	// FinishRun ends a run in progress with a conclusion (success, failure,
 	// cancelled).

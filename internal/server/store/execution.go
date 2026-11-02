@@ -12,8 +12,9 @@ import (
 func (s *SQLite) ClaimRun(ctx context.Context) (Run, bool, error) {
 	r, err := scanRun(s.db.QueryRowContext(ctx,
 		`UPDATE runs SET status = ?, updated_at = ?, attempts = attempts + 1
-		 WHERE id = (SELECT id FROM runs WHERE status = ? ORDER BY id LIMIT 1)
-		 RETURNING `+runColumns+`, workflow_text`, RunInProgress, ms(s.Now()), RunQueued), true)
+		 WHERE id = (SELECT q.id FROM runs q WHERE q.status = ?
+		             ORDER BY (SELECT COUNT(*) FROM runs r WHERE r.status = ? AND lower(r.repo) = lower(q.repo)), q.id LIMIT 1)
+		 RETURNING `+runColumns+`, workflow_text`, RunInProgress, ms(s.Now()), RunQueued, RunInProgress), true)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Run{}, false, nil
 	}
