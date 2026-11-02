@@ -125,6 +125,9 @@ type Executor struct {
 	Install string
 	// Poll is how often the queue is looked at when nobody calls Wake.
 	Poll time.Duration
+	// StartRetry is the first pause between the tries Run makes at start to deal
+	// with the runs a stopped server left in progress (default 200 ms, doubling).
+	StartRetry time.Duration
 	// Quota is the allowance of machine time per month for a repository and for
 	// an owner; zero means no limit. A run of one that has used it up fails at
 	// once with the reason.
@@ -206,7 +209,7 @@ func (e *Executor) Wake() {
 // end as failed.
 func (e *Executor) Run(ctx context.Context) error {
 	e.init()
-	if requeued, ended, err := e.Store.RequeueInterrupted(ctx, e.maxAttempts(), string(runevent.Failure)); err != nil {
+	if requeued, ended, err := e.requeueInterrupted(ctx); err != nil {
 		return fmt.Errorf("dealing with the runs left from before: %w", err)
 	} else if requeued+ended > 0 {
 		e.log().Warn("runs were in progress when the server stopped", "queued_again", requeued, "ended_as_failed", ended)
@@ -261,6 +264,33 @@ func (e *Executor) Run(ctx context.Context) error {
 		case <-e.wake:
 		case <-time.After(poll):
 		}
+	}
+}
+
+// startTries is how often Run tries to deal with the runs a stopped server left
+// in progress before it gives up; the pause between tries starts at
+// Executor.StartRetry (default 200 ms) and doubles. The database may be busy
+// for a moment right at start, with deliveries coming in; giving up at the
+// first error would leave every queued run without an executor.
+const startTries = 5
+
+func (e *Executor) requeueInterrupted(ctx context.Context) (requeued, ended int, err error) {
+	wait := e.StartRetry
+	if wait <= 0 {
+		wait = 200 * time.Millisecond
+	}
+	for try := 1; ; try++ {
+		requeued, ended, err = e.Store.RequeueInterrupted(ctx, e.maxAttempts(), string(runevent.Failure))
+		if err == nil || try == startTries || ctx.Err() != nil {
+			return requeued, ended, err
+		}
+		e.log().Warn("dealing with the runs left from before failed; trying again", "try", try, "of", startTries, "wait", wait, "err", err)
+		select {
+		case <-ctx.Done():
+			return 0, 0, err
+		case <-time.After(wait):
+		}
+		wait *= 2
 	}
 }
 

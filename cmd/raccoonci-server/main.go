@@ -269,6 +269,7 @@ Secrets are read from the environment, or from the file named by NAME_FILE (mode
 	// Execution needs three things together: where machines reach the
 	// server, the runner snapshot to start them from, and the InstaBox key.
 	var executed, janitor, cacheJanitor, imagesDone chan struct{}
+	execFailed := make(chan error, 1)
 	keep := time.Duration(*artifactDays) * 24 * time.Hour
 	instaboxMode := *publicURL != "" || *snapshot != "" || instaboxKey != ""
 	execution := instaboxMode || *localRunner != ""
@@ -398,7 +399,12 @@ Secrets are read from the environment, or from the file named by NAME_FILE (mode
 		go func() {
 			defer close(executed)
 			if err := ex.Run(ctx); err != nil {
-				log.Error("the executor stopped", "err", err)
+				// Without an executor nothing queued would ever run, and the
+				// process would still look healthy: stop it, so that whatever
+				// supervises it (systemd, Docker) starts it again.
+				log.Error("the executor stopped; shutting the server down", "err", err)
+				execFailed <- err
+				stop()
 			}
 		}()
 	}
@@ -481,6 +487,13 @@ Secrets are read from the environment, or from the file named by NAME_FILE (mode
 	}
 	if executed != nil {
 		<-executed // runs in progress are cancelled and recorded
+	}
+	select {
+	case e := <-execFailed:
+		if err == nil {
+			err = fmt.Errorf("the executor stopped: %w", e)
+		}
+	default:
 	}
 	return err
 }
