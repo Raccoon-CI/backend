@@ -29,7 +29,7 @@ import (
 
 	"raccoonci/internal/catalog"
 	"raccoonci/internal/dispatch"
-	"raccoonci/internal/engine"
+	"raccoonci/internal/jobgraph"
 	"raccoonci/internal/runner"
 	"raccoonci/internal/runnerimages"
 	"raccoonci/internal/server/github"
@@ -352,16 +352,14 @@ func (e *Executor) execute(parent context.Context, run store.Run) {
 		defer x.release()
 	}
 
-	res, err := engine.Run(ctx, x.w, engine.Options{
+	res, err := jobgraph.Run(ctx, x.w, jobgraph.Options{
 		Remote:      x.runInstance,
 		Github:      x.github,
 		Vars:        x.vars,
 		Inputs:      x.inputs,
-		Images:      x.images,
 		Catalog:     catalog.Default(),
-		WorkDir:     x.dir,
 		MaxParallel: x.maxParallel,
-		Runner:      runner.Config{OnEvent: sink.Add},
+		OnEvent:     sink.Add,
 	})
 	switch {
 	case err != nil:
@@ -654,9 +652,9 @@ func parseObject(s string) (value.Object, error) {
 	return o, nil
 }
 
-// runInstance is engine.Options.Remote: it sends one job instance to a
+// runInstance is jobgraph.Options.Remote: it sends one job instance to a
 // machine, stores what the machine says, and returns how it ended.
-func (x *execution) runInstance(ctx context.Context, inst engine.RemoteInstance) (runner.Result, error) {
+func (x *execution) runInstance(ctx context.Context, inst jobgraph.RemoteInstance) (runner.Result, error) {
 	// A job's own `concurrency:` is entered before the job starts, so a job
 	// that waits has no row, check run or machine yet. jobCtx is cancelled
 	// when a newer job of the group takes this one's place.
@@ -786,7 +784,7 @@ func (x *execution) runInstance(ctx context.Context, inst engine.RemoteInstance)
 // lacks a permission the job asks for, the job gets the default token and a
 // warning says so; when no token can be made the job runs without and a
 // warning says so (the token itself is never in the log).
-func (x *execution) secretsFor(ctx context.Context, inst engine.RemoteInstance) (secrets map[string]string, revoke func()) {
+func (x *execution) secretsFor(ctx context.Context, inst jobgraph.RemoteInstance) (secrets map[string]string, revoke func()) {
 	revoke = func() {}
 	if x.e.Tokens == nil || x.installation == 0 || x.run.Fork {
 		return x.secrets, revoke
