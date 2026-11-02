@@ -171,6 +171,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		reply(w, http.StatusOK, map[string]string{"status": "pong"})
 		return
 	}
+	if kind == "installation" || kind == "installation_repositories" {
+		h.handleInstallation(w, r, kind, body)
+		return
+	}
 	if kind != "push" && kind != "pull_request" {
 		reply(w, http.StatusAccepted, map[string]string{"status": "ignored", "reason": "not an event this server handles"})
 		return

@@ -98,6 +98,10 @@ run 会在它所跑的提交上设置 commit status `raccoonci / <workflow 名>`
 
 workflow 的 `concurrency:`（一个组名，或带 `cancel-in-progress` 的 `group`；表达式可用 `github`、`inputs`、`vars`）按仓库生效，组名不分大小写。一个组里同时只有一个 run 在跑、一个在等：组被占用时到来的 run 要等（日志写 `waiting for run N`），后面又来一个时，在等的那个被取消（`a newer run of the same concurrency group replaced this one`），和 GitHub 一样。`cancel-in-progress` 为真时，组里正在跑的 run 立刻被取消。被取消的等待者会让出位置。源码在等待结束之后才取。job 自己的 `concurrency:` 对这个 job 同样生效（表达式里还能用 `needs`、`strategy`、`matrix`）：进组发生在 job 开始之前，所以在等的 job 还没有 job 记录、check run 和机器（它所在 run 的日志写 `waiting for job deploy of run N`）；新来的 job 顶掉在等的那个；`cancel-in-progress` 取消的是组里的那个 job，不是它的整个 run，那个 job 以 cancelled 结束。同一个 matrix 的 job 在同一个组里轮流跑，每个 matrix 值一个组时一起跑。workflow 级和 job 级同名的组是两个组。限制：状态在服务进程内存里（单实例，重启后所有 run 重新进组）；只用假机器测过。等待并发组的 run 不占执行器的名额（`MaxRuns`），所以同一个组里一串 push 不会挡住别的 run。
 
+## App 装在哪里
+
+用 GitHub App 时，服务端保存一张它的安装表（账号、全部仓库还是选定仓库、是否挂起）：启动时和之后每小时从 GitHub 读（`GET /app/installations` 和每个安装的仓库），并由 App 的 `installation` 和 `installation_repositories` 投递随时更新——GitHub 对每个 App 都会发这两种，不用订阅，也不要求仓库在 `-allow` 里（只记录，不跑）。手动启动或重跑的 run 找 installation 时先查这张表，再看存下的事件，最后才问 GitHub。`GET /v1/installations` 显示这张表（限定了仓库的 token 看不了）。限制：重新投递一个旧的 `installation` 事件会把仓库列表退回当时的样子，直到下一个事件或每小时的读取；这两种事件还没见过 GitHub 自己发的（启动时的读取见过：开发 App 在 8 个仓库上）。
+
 ## OpenID Connect（id-token）
 
 有 `permissions: id-token: write` 的 job（取它自己的，没有就取 workflow 的；`write-all` 也算）可以像向 GitHub 要一样向服务端要一个签名的 ID token，拿它去换 AWS、GCP、Azure、Vault 等的短期凭据，不用存任何密钥。签发者是服务端自己：`https://<public-url>/oidc`（`-oidc`，默认开，需要 https 的 `-public-url`）。job 会拿到 `ACTIONS_ID_TOKEN_REQUEST_URL` 和 `ACTIONS_ID_TOKEN_REQUEST_TOKEN`，这正是 `actions/core` 的 `getIDToken(audience)` 和各云的登录 action（`aws-actions/configure-aws-credentials`、`google-github-actions/auth`、`azure/login`）读的；没有这个权限的 job 两个都拿不到，fork 的 pull request 永远拿不到。

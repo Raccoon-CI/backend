@@ -422,6 +422,22 @@ paths:
             application/json:
               schema: {$ref: "#/components/schemas/Run"}
         "404": {$ref: "#/components/responses/Error"}
+  /v1/installations:
+    get:
+      summary: Where the GitHub App is installed
+      description: |
+        What the App's own installation events told the server: the accounts it is installed on, whether on all their repositories or on selected ones (then listed), and whether an installation is suspended. Not available to a token limited to repositories (403).
+      responses:
+        "200":
+          description: the installations
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  installations:
+                    type: array
+                    items: {$ref: "#/components/schemas/Installation"}
   /v1/events/{id}:
     get:
       summary: One webhook delivery and what was decided for it (not its payload)
@@ -498,6 +514,16 @@ components:
         text: {type: string}
         props: {type: object, additionalProperties: {type: string}, description: "an annotation's file, line, title"}
         conclusion: {type: string}
+    Installation:
+      type: object
+      properties:
+        id: {type: integer, description: "GitHub's installation id"}
+        account: {type: string}
+        account_type: {type: string, description: "User or Organization"}
+        repository_selection: {type: string, enum: [all, selected]}
+        suspended: {type: boolean}
+        repos: {type: array, items: {type: string}, description: "the repositories GitHub listed, lower case; empty for an installation on all repositories that was never listed"}
+        updated_at: {type: string, format: date-time}
     Event:
       type: object
       properties:

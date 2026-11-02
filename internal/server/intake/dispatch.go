@@ -54,6 +54,12 @@ var (
 // repository: the one a stored delivery named, else Installation's answer.
 // 0 (no installation) is right for a token, which needs none.
 func (h *Handler) installationFor(ctx context.Context, repo string) (int64, error) {
+	// What the App's own installation events said comes first.
+	if id, err := h.Store.InstallationOfRepo(ctx, repo); err == nil {
+		return id, nil
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return 0, err
+	}
 	known, err := h.Store.Repos(ctx)
 	if err != nil {
 		return 0, err

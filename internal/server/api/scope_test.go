@@ -1,11 +1,16 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
+
+	"raccoonci/internal/server/store"
 )
+
+func ctx() context.Context { return context.Background() }
 
 // limited makes a read token limited to some repositories, through the API.
 func limited(t *testing.T, h http.Handler, repos ...string) string {
@@ -71,6 +76,21 @@ func TestALimitedTokenSeesOnlyTheRunsOfItsRepositories(t *testing.T) {
 		if rec := call(h, c[0], c[1], api, c[2]); rec.Code != 403 {
 			t.Errorf("%s %s: %d, want 403", c[0], c[1], rec.Code)
 		}
+	}
+}
+
+func TestInstallationsAreListedAndClosedToLimitedTokens(t *testing.T) {
+	a, h := setup(t)
+	a.Store.PutInstallation(ctx(), store.Installation{ID: 5, Account: "Acme", AccountType: "Organization", Selection: "selected"}, []string{"acme/web"}, true)
+	rec := call(h, "GET", "/v1/installations", token, "")
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"id":5`) || !strings.Contains(rec.Body.String(), `"repos":["acme/web"]`) {
+		t.Fatalf("list: %d %s", rec.Code, rec.Body)
+	}
+	if rec := call(h, "GET", "/v1/installations", limited(t, h, "acme/*"), ""); rec.Code != 403 {
+		t.Errorf("a limited token: %d, want 403 (it would show repositories it may not see)", rec.Code)
+	}
+	if rec := call(h, "GET", "/v1/installations", "", ""); rec.Code != 401 {
+		t.Errorf("no token: %d", rec.Code)
 	}
 }
 

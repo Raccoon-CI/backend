@@ -107,6 +107,7 @@ func (a *API) routes() []route {
 		{"GET /v1/runs/{id}/artifacts", a.listArtifacts, read},
 		{"GET /v1/runs/{id}/artifacts/{artifact}/download", a.downloadArtifact, read},
 		{"GET /v1/events/{id}", a.getEvent, read},
+		{"GET /v1/installations", a.listInstallations, read},
 		{"GET /v1/secrets", a.listSecrets(store.KindSecret), admin},
 		{"PUT /v1/secrets", a.putSecret(store.KindSecret), admin},
 		{"DELETE /v1/secrets", a.deleteSecret(store.KindSecret), admin},
@@ -349,6 +350,34 @@ func (a *API) getRun(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, http.StatusOK, toRun(run))
 	}
+}
+
+type installationJSON struct {
+	ID          int64     `json:"id"`
+	Account     string    `json:"account"`
+	AccountType string    `json:"account_type,omitempty"`
+	Selection   string    `json:"repository_selection"`
+	Suspended   bool      `json:"suspended"`
+	Repos       []string  `json:"repos"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+func (a *API) listInstallations(w http.ResponseWriter, r *http.Request) {
+	list, err := a.Store.ListInstallations(r.Context())
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "could not read the installations")
+		return
+	}
+	out := make([]installationJSON, 0, len(list))
+	for _, in := range list {
+		repos := in.Repos
+		if repos == nil {
+			repos = []string{}
+		}
+		out = append(out, installationJSON{ID: in.ID, Account: in.Account, AccountType: in.AccountType, Selection: in.Selection,
+			Suspended: in.Suspended, Repos: repos, UpdatedAt: in.UpdatedAt})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"installations": out})
 }
 
 type eventJSON struct {

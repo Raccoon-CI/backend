@@ -260,6 +260,19 @@ type Store interface {
 	// has passed, the oldest expiry first.
 	ExpiredArtifacts(ctx context.Context, now time.Time) ([]Artifact, error)
 
+	// PutInstallation makes or updates an installation of the GitHub App; with
+	// replaceRepos its repository list becomes repos, else repos are added.
+	PutInstallation(ctx context.Context, in Installation, repos []string, replaceRepos bool) error
+	// ChangeInstallationRepos applies an installation_repositories event
+	// (selection "" keeps the selection); ErrNotFound for an unknown installation.
+	ChangeInstallationRepos(ctx context.Context, id int64, selection string, add, remove []string) error
+	SetInstallationSuspended(ctx context.Context, id int64, suspended bool) error
+	DeleteInstallation(ctx context.Context, id int64) error
+	ListInstallations(ctx context.Context) ([]Installation, error)
+	// InstallationOfRepo is the working installation that covers a repository
+	// as far as the App's events said; ErrNotFound when none is known.
+	InstallationOfRepo(ctx context.Context, repo string) (int64, error)
+
 	// PutDocument makes or replaces a named document the server keeps for itself.
 	PutDocument(ctx context.Context, name string, data []byte) error
 	// GetDocument returns one; ErrNotFound when there is none.

@@ -30,6 +30,7 @@ import (
 	"raccoonci/internal/server/execute"
 	"raccoonci/internal/server/github"
 	"raccoonci/internal/server/imagesync"
+	"raccoonci/internal/server/instsync"
 	"raccoonci/internal/server/intake"
 	"raccoonci/internal/server/oidc"
 	"raccoonci/internal/server/retention"
@@ -53,6 +54,21 @@ func main() {
 		fmt.Fprintln(os.Stderr, "raccoonci-server:", err)
 		os.Exit(1)
 	}
+}
+
+// appInstallations is what instsync asks of GitHub: the App lists its
+// installations, the client reads one installation's repositories.
+type appInstallations struct {
+	app *github.App
+	gh  *github.Client
+}
+
+func (a appInstallations) Installations(ctx context.Context) ([]github.AppInstallation, error) {
+	return a.app.Installations(ctx)
+}
+
+func (a appInstallations) InstallationRepos(ctx context.Context, id int64) ([]string, error) {
+	return a.gh.InstallationRepos(ctx, id)
 }
 
 func defaultDataDir() string {
@@ -343,6 +359,17 @@ Secrets are read from the environment, or from the file named by NAME_FILE (mode
 	if err := hook.Recover(ctx); err != nil {
 		return fmt.Errorf("looking for deliveries left from before: %w", err)
 	}
+	// With an App, the table of its installations is read from GitHub at start
+	// and then hourly (the installation events keep it current in between).
+	var instDone chan struct{}
+	if app, ok := tokens.(*github.App); ok {
+		instDone = make(chan struct{})
+		syncer := &instsync.Syncer{Store: st, GH: appInstallations{app, gh}, Log: log}
+		go func() {
+			defer close(instDone)
+			syncer.Run(ctx, time.Hour)
+		}()
+	}
 	logsDone := make(chan struct{})
 	go func() {
 		defer close(logsDone)
@@ -389,6 +416,9 @@ Secrets are read from the environment, or from the file named by NAME_FILE (mode
 		<-scheduled
 	}
 	<-logsDone
+	if instDone != nil {
+		<-instDone
+	}
 	if janitor != nil {
 		<-janitor
 	}
