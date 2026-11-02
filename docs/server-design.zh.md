@@ -14,7 +14,7 @@
 - 只能引用将来会进共用库仓库的包：`value`、`workflow`、`expr`、`trigger`、`plan`、`catalog`、`scan`、`affected`，以及 `dispatch` 的协议类型。需要这个清单之外的东西时，先决定它放在哪里再用。
 - 对外的一切都放在服务端自己定义的小接口后面：数据库（`store`）、对象存储（`blob.Store`，已有）、算力（`Provider`，`instabox` 里已有）、源码（`Source`）、GitHub（`GitHub`）。测试用的假实现放在接口旁边。
 - 前端和 CLI 只通过 HTTP API 和服务端通信：JSON over HTTP，仓库里放一份 OpenAPI 文件，日志用 server-sent events。和前端不共用 Go 类型。
-- 控制器与 agent 之间的协议（`internal/dispatch`）是带版本号的公开协议。现在 agent 跑的是 `raccoonci run-instance`；拆分后 runner 仓库实现 agent 一侧，backend 实现控制器一侧，两边只通过这份协议接触。
+- 控制器与 agent 之间的协议（`internal/dispatch`）是带版本号的公开协议。现在 agent 跑的是 `raccoonci run-instance`；拆分后 runner 仓库实现 agent 一侧，backend 实现控制器一侧，两边只通过这份协议接触。版本号是真的，而且会检查（`dispatch.ProtocolVersion`，请求头 `X-Raccoonci-Protocol`；任务本身用 `wire.Version`）：agent 带上自己的版本，控制器回答自己的版本；比控制器新的 agent 会被拒绝并说明原因，它的 run 立刻结束。不带版本的 agent（它出现之前造的都是）算版本 1。规则：只加可选内容的改动不升版本；改变已有字段或路由的含义、或删掉它，要升版本，控制器同时支持从 `MinProtocolVersion` 到自己的所有版本。这很重要，因为机器是用快照做的，快照可能比调用它的控制器旧。
 
 ## 组成部分
 

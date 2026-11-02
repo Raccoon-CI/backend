@@ -705,7 +705,7 @@ func (x *execution) runInstance(ctx context.Context, inst engine.RemoteInstance)
 	if install == "" {
 		install = "all"
 	}
-	input, err := json.Marshal(wire.InstanceSpec{Workflow: x.run.WorkflowPath, Job: inst.Job.ID, Contexts: contexts, ServiceEnv: svcEnv, Install: install, Images: x.imagesJSON})
+	input, err := json.Marshal(wire.InstanceSpec{Protocol: wire.Version, Workflow: x.run.WorkflowPath, Job: inst.Job.ID, Contexts: contexts, ServiceEnv: svcEnv, Install: install, Images: x.imagesJSON})
 	if err != nil {
 		return runner.Result{}, err
 	}

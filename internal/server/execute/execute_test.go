@@ -271,6 +271,9 @@ func TestTheImagesARunWasPlannedWithTravelWithEveryJob(t *testing.T) {
 		t.Fatalf("%d jobs", len(e.m.calls))
 	}
 	for _, c := range e.m.calls {
+		if c.spec.Protocol != wire.Version {
+			t.Errorf("job %s: the assignment says protocol %d, want %d", c.spec.Job, c.spec.Protocol, wire.Version)
+		}
 		sent, err := runnerimages.ParseSnapshot(c.spec.Images)
 		if err != nil {
 			t.Fatalf("job %s: the images sent: %v", c.spec.Job, err)
