@@ -2,7 +2,7 @@
 
 [English](server-design.md) — 两个版本要同步修改。
 
-状态：2026-11-01。"工作顺序"的第 1、2 步已经做了（事件入口、run 记录、源码、在机器上执行、日志；跑了什么、验证了什么见 `docs/server-dev.zh.md`），其余还没有。这是 TODO 里 C.1 的计划，写在拆分成独立仓库（raccoonci-frontend、-backend、-runner、-cli，外加一个共用库仓库）之前。服务端先在本仓库里写，遵守下面的"边界"，这样以后拆分只是搬代码，不是重写。
+状态：2026-11-02。"工作顺序"的 1–7 步都做了，各自还剩什么见 TODO C.1，跑了什么、验证了什么见 `docs/server-dev.zh.md`。已接上真实的 GitHub App（开发用）和 InstaBox；还没有的：catalog feed（等定）、GitHub 登录在浏览器里的真实走通（要先登记回调地址）、按仓库/组织的用量额度、前端。这是 TODO 里 C.1 的计划，写在拆分成独立仓库（raccoonci-frontend、-backend、-runner、-cli，外加一个共用库仓库）之前。服务端先在本仓库里写，遵守下面的"边界"，这样以后拆分只是搬代码，不是重写。
 
 ## 服务端是做什么的
 
@@ -52,13 +52,15 @@
 
 ## 工作顺序
 
-1. **骨架与入口。** 配置、数据库和迁移、带验签的 webhook 端点、事件和 run 记录、通过 API `GET` run。先不执行。测试：回放录下来的投递。
-2. **执行。** 拉源码，engine 配上 dispatch 控制器和 InstaBox provider，日志存储并推流。第一个端到端：往测试仓库 push，run 出现，job 在机器上跑，日志可读。测试对象：本仓库自己的 `ci.yml`。
-3. **回报。** job 的 check run，重跑和取消。
-4. **服务持久化。** artifact 和 cache 进数据库和 S3。
-5. **密钥与认证。** 别人用之前必须有。
+1. **骨架与入口。** 配置、数据库和迁移、带验签的 webhook 端点、事件和 run 记录、通过 API `GET` run。先不执行。测试：回放录下来的投递。✅
+2. **执行。** 拉源码，engine 配上 dispatch 控制器和 InstaBox provider，日志存储并推流。第一个端到端：往测试仓库 push，run 出现，job 在机器上跑，日志可读。测试对象：本仓库自己的 `ci.yml`。✅（真机上跑过；matrix、真实 artifact、真实 PR 还没在真机上看过）
+3. **回报。** job 的 check run（带注解和 summary），重跑和取消。✅
+4. **服务持久化。** artifact 和 cache 进数据库和 S3。✅（S3 路径只对假的和 SeaweedFS 测过，真桶没有访问密钥）
+5. **密钥与认证。** 别人用之前必须有。✅ 密钥、变量、角色、按仓库限制的 token、用 GitHub 登录（代码和假 GitHub 测过，浏览器里还没真走过）
 6. **定时与 dispatch。** cron（`internal/server/schedule`）、带输入的 `workflow_dispatch`（`POST /v1/runs`）。已做。
-7. **加固。** 重启行为、配额、保留期、工作目录清理（TODO C.1）。
+7. **加固。** 重启行为、保留期、工作目录清理、磁盘保护、公平调度。✅（按仓库/组织的用量额度没做）
+
+另外做了、原计划里没有写的：每个 job 的 `GITHUB_TOKEN`（App 的 installation token，范围最小，结束即吊销）、OpenID Connect 签发（`id-token: write`）、workflow 级和 job 级 `concurrency:`、App 的安装表、runner-images 数据入库并随任务发给机器。
 
 前端在第 2 步之后开始，那时 API 里有 run 和日志可展示。在此之前，对着一个不存在的 API 写前端不值得。
 

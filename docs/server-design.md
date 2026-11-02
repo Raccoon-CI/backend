@@ -2,7 +2,7 @@
 
 [中文版](server-design.zh.md) — keep the two in step.
 
-Status: 2026-11-01. Steps 1 and 2 of "Order of work" are built (intake, run records, source, execution on machines, logs; see `docs/server-dev.md` for what runs and what was checked); the rest is not. It is the plan for TODO section C.1, written before the split into separate repositories (raccoonci-frontend, -backend, -runner, -cli, plus a shared library repository). The server is written first, inside this repository, under rules that make the later split a move and not a rewrite (see "Boundaries").
+Status: 2026-11-02. Steps 1 to 7 of "Order of work" are built; what is left of each is in TODO C.1, and what runs and what was checked is in `docs/server-dev.md`. It runs as a real (development) GitHub App and on InstaBox. Not there yet: the catalog feed (waiting for a decision), signing in with GitHub walked through in a browser (the callback URL must be registered first), a usage allowance per repository or organization, and the frontend. It is the plan for TODO section C.1, written before the split into separate repositories (raccoonci-frontend, -backend, -runner, -cli, plus a shared library repository). The server is written first, inside this repository, under rules that make the later split a move and not a rewrite (see "Boundaries").
 
 ## What the server is for
 
@@ -54,11 +54,13 @@ One `store` interface with the operations the server needs (events, runs, instan
 
 1. **Skeleton and intake.** Config, database and migrations, webhook endpoint with verification, event and run records, `GET` runs through the API. No execution. Test: replay recorded deliveries.
 2. **Execution.** Source fetch, engine with the dispatch controller and InstaBox provider, logs stored and streamed. First end-to-end: push to a test repository, run appears, job runs on a machine, log is readable. Test: this repository's own `ci.yml`.
-3. **Reporting.** Check runs for jobs, rerun and cancel.
-4. **Services made persistent.** Artifacts and caches in the database and S3.
-5. **Secrets and auth.** Needed before anyone else uses it.
+3. **Reporting.** Check runs for jobs (with annotations and summary), rerun and cancel. Done.
+4. **Services made persistent.** Artifacts and caches in the database and S3. Done (the S3 path was checked against fakes and SeaweedFS; no access key for a real bucket was given).
+5. **Secrets and auth.** Needed before anyone else uses it. Done: secrets, variables, roles, tokens limited to repositories, signing in with GitHub (tested with a fake GitHub; not yet walked through in a browser).
 6. **Schedules and dispatch.** Cron (`internal/server/schedule`), `workflow_dispatch` with inputs (`POST /v1/runs`). Done.
-7. **Hardening.** Restart behaviour, quotas, retention, workdir clean-up (TODO C.1).
+7. **Hardening.** Restart behaviour, retention, workdir clean-up, disk protection, fair scheduling. Done (a usage allowance per repository or organization is not).
+
+Also built, though the plan did not list them: a `GITHUB_TOKEN` per job (an installation token cut down to the job's permissions, revoked when the job ends), OpenID Connect issuing for `id-token: write`, workflow-level and job-level `concurrency:`, the table of the App's installations, and the runner-images data stored in the database and sent to the machine with each job.
 
 The frontend starts after step 2, when the API has runs and logs to show. Until then it is not worth writing against an API that does not exist.
 
