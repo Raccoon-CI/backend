@@ -81,6 +81,8 @@ func run(args []string) error {
 	masterKeyID := fs.String("master-key-id", "1", "the id of RACCOONCI_MASTER_KEY, written beside every secret it seals")
 	masterKeyOldID := fs.String("master-key-old-id", "", "the id of RACCOONCI_MASTER_KEY_OLD, the key that sealed secrets before a rotation (they are opened with it, new ones sealed with the current key)")
 	artifactDays := fs.Int("artifact-retention-days", 90, "how long an artifact is kept: the default, and the most a workflow may ask for (retention-days); then it is deleted")
+	cacheRepoGB := fs.Int("cache-repo-limit-gb", 10, "how much all the cache spaces of one repository may hold together, in GB (0: no cap); checked every 15 minutes, the least recently used go first")
+	cacheDays := fs.Int("cache-max-age-days", 7, "a cache entry nobody has restored for this many days is deleted")
 	cacheLimitGB := fs.Int("cache-limit-gb", 5, "how much one cache space (the default branch, or one other ref) may hold, in GB; the least recently used go first")
 	startsPerMinute := fs.Int("starts-per-minute", 10, "how many InstaBox machines may be started a minute (the organization's limit; 10 on the Pro plan): more wait their turn; 0 = no limit of our own (a refusal from InstaBox is still waited out)")
 	schedules := fs.Bool("schedule", true, "fire the runs of `on: schedule:` workflows (on the default branch) for the repositories the server knows; -schedule=false leaves it to GitHub")
@@ -186,7 +188,7 @@ Secrets are read from the environment, or from the file named by NAME_FILE (mode
 
 	// Execution needs three things together: where machines reach the
 	// server, the runner snapshot to start them from, and the InstaBox key.
-	var executed, janitor chan struct{}
+	var executed, janitor, cacheJanitor chan struct{}
 	keep := time.Duration(*artifactDays) * 24 * time.Hour
 	instaboxMode := *publicURL != "" || *snapshot != "" || instaboxKey != ""
 	execution := instaboxMode || *localRunner != ""
@@ -253,14 +255,20 @@ Secrets are read from the environment, or from the file named by NAME_FILE (mode
 		}()
 		cacheSvc, err := caches.New(caches.Config{
 			Dir: filepath.Join(*dataDir, "caches"), PublicURL: base, Signer: arts.Signer(), S3For: s3For,
-			MaxBytes: int64(*cacheLimitGB) << 30,
-			Spaces:   (&caches.Resolver{Runs: st, Branches: gh}).Spaces,
+			MaxBytes: int64(*cacheLimitGB) << 30, MaxRepoBytes: int64(*cacheRepoGB) << 30,
+			MaxAge: time.Duration(*cacheDays) * 24 * time.Hour, Log: log,
+			Spaces: (&caches.Resolver{Runs: st, Branches: gh}).Spaces,
 		})
 		if err != nil {
 			return err
 		}
 		defer cacheSvc.Close()
 		cacheSvc.Mount(mux)
+		cacheJanitor = make(chan struct{})
+		go func() {
+			defer close(cacheJanitor)
+			cacheSvc.Janitor(ctx, 15*time.Minute)
+		}()
 		ex := &execute.Executor{Store: st, Source: gh, Machine: machine, Services: cacheSvc.Extend(arts),
 			WorkDir: filepath.Join(*dataDir, "work"), Log: log}
 		if *status {
@@ -329,6 +337,9 @@ Secrets are read from the environment, or from the file named by NAME_FILE (mode
 	}
 	if janitor != nil {
 		<-janitor
+	}
+	if cacheJanitor != nil {
+		<-cacheJanitor
 	}
 	if executed != nil {
 		<-executed // runs in progress are cancelled and recorded

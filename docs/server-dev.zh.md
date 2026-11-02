@@ -123,7 +123,8 @@ GET /v1/runs/{id}/artifacts/{artifact}/download   # 302 到一个一小时内有
 - 默认分支有一个空间，只有默认分支的 run 能写。
 - 其余的 ref（功能分支、tag、pull request 的合并 ref，不管是不是来自 fork）各有自己的空间，也能从默认分支的空间恢复，但读不到别的 ref 的空间，也写不进默认分支的空间。pull request 用默认分支用的那个 key 保存缓存，会落进它自己的空间，默认分支的那一条不变。
 - 不同仓库之间永远不共用。和 GitHub 不同的是，pull request 不能从它的目标分支恢复，除非目标分支就是默认分支。
-- 每个空间的上限是 `-cache-limit-gb`（默认 5），超了就淘汰最久没用的条目。没人再用的空间还不会被删除，上限是按空间算的，不是按仓库。
+- 三个限制。每个空间的上限是 `-cache-limit-gb`（默认 5），每次上传都检查，超了就淘汰最久没用的条目。一个仓库所有空间加起来的上限是 `-cache-repo-limit-gb`（默认 10，0 表示不限），一个条目 `-cache-max-age-days`（默认 7 天，和 GitHub 一样）没人恢复过就删除；这两个由清理任务做，启动时和之后每 15 分钟一次，所以仓库可能在这段时间内超过上限。清理时按仓库跨空间删最久没用的条目，并删掉变空的空间（有上传进行中的不删）。恢复的时间最多每 5 分钟和服务关闭时写一次盘，所以重启不会让一个常用条目看起来像没人用。
+- 清理功能出现之前建的空间只靠目录名认：有 `objects` 目录就当作在本机磁盘上，否则不动它（它在哪个组织的桶里没有记下来）。新建的空间有一个 `org` 文件。
 
 对象（artifact 和缓存）放在 `-data-dir` 下的目录里，或者放在用户自己提供的桶里：`-storage-s3-bucket B [-storage-s3-endpoint URL] [-storage-s3-region R] [-storage-s3-prefix P] [-storage-s3-path-style]`，加上 `RACCOONCI_STORAGE_S3_KEY` 和 `RACCOONCI_STORAGE_S3_SECRET`。用 Cloudflare R2 的话：endpoint 是 `https://<账号 id>.r2.cloudflarestorage.com`，region 填 `auto`。启动时会试一遍这个桶（写入、通过预签名链接读回、删除），桶不能用就拒绝启动；如果桶不用凭证就把对象给任何人，会在日志里警告。桶要保持私有。下载是直接指向桶的预签名链接，上传仍然经过服务端。这个桶是服务端自己的，给没有自己的桶的组织用。
 

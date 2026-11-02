@@ -9,9 +9,10 @@
 // routed by its token: the token names a run, the run names its spaces. v2 is
 // not advertised, so jobs use v1.
 //
-// Not done: spaces that nobody has used for a while are not removed (GitHub
-// drops a cache after 7 days without a hit); the size limit is per space, not
-// per repository.
+// Sweep (run by Janitor) deletes entries nobody has hit for seven days, as
+// GitHub does, removes spaces left empty, and keeps a repository's spaces
+// together under a size cap. Each space also has a cap of its own, enforced at
+// every upload.
 package caches
 
 import (
@@ -20,6 +21,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -27,6 +29,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"raccoonci/internal/artifact"
 	"raccoonci/internal/blob"
@@ -54,6 +57,13 @@ type Config struct {
 	// MaxBytes caps the entries of one space (0: no cap); the least recently
 	// used go first, as on GitHub.
 	MaxBytes int64
+	// MaxAge is how long an entry may go unused before the sweep deletes it
+	// (default DefaultMaxAge, seven days). MaxRepoBytes caps what all the spaces
+	// of one repository hold together (0: no cap); it is enforced by the sweep,
+	// so a repository can exceed it for the time between two sweeps.
+	MaxAge       time.Duration
+	MaxRepoBytes int64
+	Log          *slog.Logger
 	// Spaces says which spaces a run uses; an error refuses the run any cache.
 	Spaces func(ctx context.Context, runID int64) (Space, error)
 }
@@ -257,6 +267,7 @@ func (s *Service) space(ctx context.Context, id, org string, create bool) (*spac
 	if err != nil {
 		return nil, err
 	}
+	s.writeOrg(dir, org)
 	sp.version = version
 	s.spaces[id] = sp
 	return sp, nil
