@@ -46,6 +46,12 @@ type Event struct {
 	Note           string // what was decided, per workflow
 }
 
+// RepoRef is a repository the server has seen an event for.
+type RepoRef struct {
+	Name           string // owner/name
+	InstallationID int64
+}
+
 // Run is one workflow run the server decided to start.
 type Run struct {
 	ID           int64
@@ -146,6 +152,10 @@ type Store interface {
 	PendingEvents(ctx context.Context) ([]Event, error)
 	FinishEvent(ctx context.Context, id int64, status, note string) error
 	GetEvent(ctx context.Context, id int64) (Event, error)
+	// Repos lists the repositories any stored event is about, by name, each
+	// with the newest installation id seen for it (0 if none): the repositories
+	// the server has been told about, which is where it looks for schedules.
+	Repos(ctx context.Context) ([]RepoRef, error)
 
 	// CreateRun stores a run. created is false when that event already has a
 	// run for the workflow file: handling an event again does not start a

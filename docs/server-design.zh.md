@@ -18,7 +18,7 @@
 
 ## 组成部分
 
-1. **事件入口。** 一个 GitHub App（webhook 事件 `push`、`pull_request`、`create`、`delete`，`workflow_dispatch` 通过 API；需要 Checks 和 Contents 权限）。每次投递先验签（HMAC-SHA256，常量时间比较）再读取，原始载荷连同投递 id 一起存下来（重复投递不会重复处理），然后处理。`schedule:` 由服务端自己的 cron 触发（解析器在 `ghrunner/cron.go`，服务端用到时移进库）。
+1. **事件入口。** 一个 GitHub App（webhook 事件 `push`、`pull_request`、`create`、`delete`，`workflow_dispatch` 通过 API；需要 Checks 和 Contents 权限）。每次投递先验签（HMAC-SHA256，常量时间比较）再读取，原始载荷连同投递 id 一起存下来（重复投递不会重复处理），然后处理。`schedule:` 由服务端自己的 cron 触发（解析器是 `internal/cron`，将来进库；`internal/server/schedule` 负责到点触发）。
 2. **触发匹配。** 对事件所在提交上的每个 workflow 文件调用 `trigger.Match`；变更文件来自 compare 接口（未知就表示"不过滤"）。匹配上就创建一个 run。`workflow_dispatch` 来自 API，输入有类型（`trigger.DispatchInputs`）。
 3. **run 和 job。** run 记录事件、提交、该提交上的 workflow 文件原文（存下来，重跑用的是同一份文本）和它的 job 实例。状态：queued、in progress、completed，加一个结论。第一版把 engine 放在进程内（见"engine 与重启"）。
 4. **源码。** 通过 App 的 installation token 取该提交的 tarball，按 `dispatch.TarDir` 的布局重新打包，agent 收到的和今天收到的一样。pull request 用合并 ref（`refs/pull/N/merge`），它在事件之后过一会儿 GitHub 才生成；服务端短时间重试，之后退回头提交，并在 run 里说明。自己把 base 合并进 head 不在范围内。
@@ -57,7 +57,7 @@
 3. **回报。** job 的 check run，重跑和取消。
 4. **服务持久化。** artifact 和 cache 进数据库和 S3。
 5. **密钥与认证。** 别人用之前必须有。
-6. **定时与 dispatch。** cron、带输入的 `workflow_dispatch`。
+6. **定时与 dispatch。** cron（`internal/server/schedule`）、带输入的 `workflow_dispatch`（`POST /v1/runs`）。已做。
 7. **加固。** 重启行为、配额、保留期、工作目录清理（TODO C.1）。
 
 前端在第 2 步之后开始，那时 API 里有 run 和日志可展示。在此之前，对着一个不存在的 API 写前端不值得。

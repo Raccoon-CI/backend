@@ -29,6 +29,7 @@ import (
 	"raccoonci/internal/server/execute"
 	"raccoonci/internal/server/github"
 	"raccoonci/internal/server/intake"
+	"raccoonci/internal/server/schedule"
 	"raccoonci/internal/server/secrets"
 	"raccoonci/internal/server/storage"
 	"raccoonci/internal/server/store"
@@ -80,6 +81,8 @@ func run(args []string) error {
 	masterKeyID := fs.String("master-key-id", "1", "the id of RACCOONCI_MASTER_KEY, written beside every secret it seals")
 	masterKeyOldID := fs.String("master-key-old-id", "", "the id of RACCOONCI_MASTER_KEY_OLD, the key that sealed secrets before a rotation (they are opened with it, new ones sealed with the current key)")
 	cacheLimitGB := fs.Int("cache-limit-gb", 5, "how much one cache space (the default branch, or one other ref) may hold, in GB; the least recently used go first")
+	startsPerMinute := fs.Int("starts-per-minute", 10, "how many InstaBox machines may be started a minute (the organization's limit; 10 on the Pro plan): more wait their turn; 0 = no limit of our own (a refusal from InstaBox is still waited out)")
+	schedules := fs.Bool("schedule", true, "fire the runs of `on: schedule:` workflows (on the default branch) for the repositories the server knows; -schedule=false leaves it to GitHub")
 	var allow listFlag
 	fs.Var(&allow, "allow", "a repository the server works for, owner/name or owner/* (repeatable; at least one)")
 	fs.Usage = func() {
@@ -218,6 +221,7 @@ Secrets are read from the environment, or from the file named by NAME_FILE (mode
 				Controller:    ctl,
 				ControllerURL: base + "/agent",
 				Snapshot:      *snapshot,
+				Limit:         &instabox.StartLimit{PerMinute: *startsPerMinute},
 				Logf:          func(f string, a ...any) { log.Info(fmt.Sprintf(f, a...), "from", "instabox") },
 			}
 			defer prov.Wait() // machines being deleted
@@ -274,6 +278,28 @@ Secrets are read from the environment, or from the file named by NAME_FILE (mode
 	if err := hook.Recover(ctx); err != nil {
 		return fmt.Errorf("looking for deliveries left from before: %w", err)
 	}
+	var scheduled chan struct{}
+	if *schedules {
+		// Repositories are known from their events; those named exactly in
+		// -allow are watched from the start.
+		var extra []string
+		for _, a := range allow {
+			if !strings.HasSuffix(a, "/*") {
+				extra = append(extra, a)
+			}
+		}
+		sch := &schedule.Scheduler{Store: st, Source: gh, Allowed: hook.Allows, Extra: extra, Log: log,
+			Notify: func() {
+				if hook.Notify != nil {
+					hook.Notify()
+				}
+			}}
+		scheduled = make(chan struct{})
+		go func() {
+			defer close(scheduled)
+			sch.Run(ctx)
+		}()
+	}
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()
 	log.Info("listening", "addr", *listen, "db", dbPath, "allow", []string(allow), "github_auth", authMode, "api", apiToken != "",
@@ -289,6 +315,9 @@ Secrets are read from the environment, or from the file named by NAME_FILE (mode
 	defer cancel()
 	err = srv.Shutdown(shutdown)
 	hook.Wait()
+	if scheduled != nil {
+		<-scheduled
+	}
 	if executed != nil {
 		<-executed // runs in progress are cancelled and recorded
 	}

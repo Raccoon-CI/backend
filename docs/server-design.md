@@ -18,7 +18,7 @@ The own-engine path (`raccoonci run`) works on one machine and in one process. T
 
 ## Pieces
 
-1. **Event intake.** A GitHub App (webhook events `push`, `pull_request`, `workflow_dispatch` via API, `create`, `delete`; Checks and Contents permissions). Every delivery is verified (HMAC-SHA256, constant time) before it is read, stored as raw payload with its delivery id (so a redelivery is a no-op), then handled. `schedule:` is fired by the server's own cron (the parser exists in `ghrunner/cron.go`; it moves to the library when the server needs it).
+1. **Event intake.** A GitHub App (webhook events `push`, `pull_request`, `workflow_dispatch` via API, `create`, `delete`; Checks and Contents permissions). Every delivery is verified (HMAC-SHA256, constant time) before it is read, stored as raw payload with its delivery id (so a redelivery is a no-op), then handled. `schedule:` is fired by the server's own cron (the parser is `internal/cron`, a package for the library; `internal/server/schedule` fires the entries).
 2. **Trigger matching.** `trigger.Match` per workflow file at the event's commit; changed files from the compare API (unknown means "do not filter"). A matching workflow creates a run. `workflow_dispatch` comes from the API with typed inputs (`trigger.DispatchInputs`).
 3. **Runs and jobs.** A run holds the event, the commit, the workflow file at that commit (stored, so a rerun uses the same text) and its job instances. State: queued, in progress, completed, with a conclusion. The first version keeps the engine in process (see "Engine and restarts").
 4. **Source.** The commit's tarball through the App installation token, repackaged with `dispatch.TarDir`'s layout so the agent receives what it receives today. For a pull request it uses the merge ref (`refs/pull/N/merge`), which GitHub makes a moment after the event; the server retries for a short time and then falls back to the head commit and says so in the run. Merging the base into the head itself is out of scope.
@@ -57,7 +57,7 @@ One `store` interface with the operations the server needs (events, runs, instan
 3. **Reporting.** Check runs for jobs, rerun and cancel.
 4. **Services made persistent.** Artifacts and caches in the database and S3.
 5. **Secrets and auth.** Needed before anyone else uses it.
-6. **Schedules and dispatch.** Cron, `workflow_dispatch` with inputs.
+6. **Schedules and dispatch.** Cron (`internal/server/schedule`), `workflow_dispatch` with inputs (`POST /v1/runs`). Done.
 7. **Hardening.** Restart behaviour, quotas, retention, workdir clean-up (TODO C.1).
 
 The frontend starts after step 2, when the API has runs and logs to show. Until then it is not worth writing against an API that does not exist.

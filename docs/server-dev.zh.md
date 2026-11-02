@@ -85,6 +85,18 @@ run 会在它所跑的提交上设置 commit status `raccoonci / <workflow 名>`
 
 `/v1/openapi.yaml` 描述这一切；有一个测试保证它和路由一致。
 
+## 定时触发
+
+`on: schedule:` 的 workflow 由服务端触发（`-schedule=false` 则交给 GitHub）。和 GitHub 一样，只认仓库**默认分支**上的 workflow 文件，到点时 run 用的是该分支当时最新的提交（`github.event_name` 为 `schedule`，`github.event.schedule` 是触发的那条 cron，actor 是 `schedule`）。cron 按 UTC、五段，支持列表、范围和步长；一个 workflow 写了两条就是各自到点各出一个 run。
+
+- 看哪些仓库：服务端收到过事件（投递或 dispatch）的仓库，加上 `-allow` 里写明全名的（`owner/*` 不算：通配里的仓库要等它的第一个事件才认得）。对一个仓库的定时信息缓存 5 分钟；到点时会在分支最新提交上重新读一次 workflow，那条 cron 必须还在。
+- 一次触发会记成一个事件，id 由仓库、文件、cron 条目和分钟组成，所以重启（或两个服务端共用一个库）不会触发两次。服务端停着的时候错过的触发不补；卡顿了几分钟只出一个 run，不会一下子出一串。GitHub 自己在高峰时可能晚点或丢掉定时 run；这里误差在 15 秒的检查间隔以内。
+- 没做：GitHub 对 60 天没有活动的仓库停掉定时任务的规则；没人给它发过事件、又不在 `-allow` 里的仓库发现不了。
+
+## 起机限额
+
+InstaBox 限制一个组织每分钟起机的数量（Pro 套餐 10 台），超了回 429。`-starts-per-minute`（默认 10，0 表示自己不计数）让服务端用 62 秒的滑动窗口数自己的起机次数，超了的排队等，所以一阵 run 会被摊开而不是失败；收到 429 后所有起机停 20 秒，被拒的那一次再问（最多约 7 分钟）。日志里会写 `waited … for the machine start limit`。计数只是服务端自己的：同一个 InstaBox 组织里别人起的机器，只能靠 429 才知道。
+
 ## 缓存，以及对象放在哪里
 
 `actions/cache` 和 `setup-*` 的 `cache:` 选项都能用（v1 协议）。缓存不是所有人共用一份：每个 run 把缓存存进**它自己那个 ref 的空间**，恢复时从这个空间和**默认分支的空间**找。
@@ -123,4 +135,6 @@ DELETE /v1/storage?org=acme        # 回到服务端自己的存储
 - **InstaBox 上的状态、取消、重跑：** run 的提交在 GitHub 上先 `pending` 后 `success`（"Succeeded in 27s"）；5 秒时取消的 run 记为 cancelled，状态是 `error`；重跑重复了第一次（`rerun_of`）并成功。取消的那次暴露了一个泄漏：机器还在创建，删除被拒绝（409 `operation_conflict`）后就放弃了，机器一直跑到 2 小时的期限。现在 `instabox.Client.DeleteMachine` 会等待后重试；真机验证过（创建中取消后没有残留机器）。
 - **真实 job 里的缓存，在 InstaBox 机器上**（`bench-go-integration`，`setup-go` 带 `cache: true`，还有一个 postgres 服务容器）：第一次没找到缓存，经服务端保存了 44 MB；重跑时恢复成功（"Cache restored from key …"、"Cache hit occurred on the primary key"）；在新分支上的 run 也恢复成功，走的是默认分支的空间；磁盘上只有默认分支的那一个空间；结束后没有残留机器。隔离规则有用多个 run 做的测试（功能分支、pull request 的 ref、另一个仓库、重启），去掉隔离后这些测试会失败。
 - **密钥：** 经隧道存了一个密钥和一个变量并列出（密钥只列名字），`read` token 读 run 得到 200、读密钥得到 403，被吊销的 token 立刻失效。用真正的 runner（`RACCOONCI_TEST_BIN=dist/raccoonci go test ./internal/server/execute -run Real`）：step 对密钥打印出 `token=[***]`，对变量打印出 `region=[eu]`，密钥的值在日志里任何地方都没有出现，fork 的 run 打印的 token 是空的。没在真实的、由 GitHub 触发且用到密钥的 workflow 上跑过（手头的 token 加不了 workflow 文件）。
+- **InstaBox 上的起机限额**（`-starts-per-minute 2`，同时启动 `bench-lint-docs` 的四个 run）：两台机器 9–11 秒就绪，另外两个分别等了 1 分 0.5 秒和 1 分 1.5 秒的限额才起机；四个 run 都成功，没有机器遗留。没有真的收到过 InstaBox 的 429（收到后重试只在假 API 上测过）。
+- **定时触发：**只有单测（时钟是传进去的）。手边没有带 `schedule:` 的仓库，令牌也加不了，所以没看到过真实触发。
 - **没试过：** 桶（没有给开发用 R2 桶的访问密钥，所以 artifact 和缓存走 S3 的路径以及桶的检查只用假的测过）、真实 job 上传 artifact、由 GitHub 发出的投递建出的 run、真实的 pull request、App 对真实 GitHub 的认证、真实 job 里的 artifact、带 matrix 的 run。

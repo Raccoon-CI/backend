@@ -192,6 +192,24 @@ func (s *SQLite) GetEvent(ctx context.Context, id int64) (Event, error) {
 	return e, err
 }
 
+// Repos implements Store.
+func (s *SQLite) Repos(ctx context.Context) ([]RepoRef, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT repo, MAX(installation_id) FROM events GROUP BY repo ORDER BY repo`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RepoRef
+	for rows.Next() {
+		var r RepoRef
+		if err := rows.Scan(&r.Name, &r.InstallationID); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 const runColumns = `id, event_id, repo, workflow_path, workflow_name, event, ref, sha, base_sha, pull_request, fork, actor, inputs, rerun_of, status, conclusion, created_at, updated_at`
 
 func scanRun(r scanner, withText bool) (Run, error) {

@@ -85,6 +85,9 @@ func (h *Handler) init() {
 // Wait blocks until the deliveries being handled in the background are done.
 func (h *Handler) Wait() { h.wg.Wait() }
 
+// Allows reports whether the server works for the repository (see Allow).
+func (h *Handler) Allows(repo string) bool { return h.allowed(repo) }
+
 func (h *Handler) allowed(repo string) bool {
 	for _, a := range h.Allow {
 		if a == repo {

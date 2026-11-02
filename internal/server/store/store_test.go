@@ -36,6 +36,28 @@ func TestEventIsStoredOncePerDelivery(t *testing.T) {
 	}
 }
 
+func TestReposAreThoseAnEventNamed(t *testing.T) {
+	s, ctx := open(t), context.Background()
+	for i, e := range []Event{
+		{DeliveryID: "a", Repo: "o/web", InstallationID: 3},
+		{DeliveryID: "b", Repo: "o/web", InstallationID: 9},
+		{DeliveryID: "c", Repo: "o/web"}, // a delivery without an installation does not hide it
+		{DeliveryID: "d", Repo: "o/api"},
+	} {
+		e.Kind, e.Payload = "push", []byte("{}")
+		if _, _, err := s.RecordEvent(ctx, e); err != nil {
+			t.Fatal(i, err)
+		}
+	}
+	got, err := s.Repos(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0] != (RepoRef{"o/api", 0}) || got[1] != (RepoRef{"o/web", 9}) {
+		t.Fatalf("repos = %+v", got)
+	}
+}
+
 func TestPendingEventsAreTheUnfinishedOnes(t *testing.T) {
 	s, ctx := open(t), context.Background()
 	a, _, _ := s.RecordEvent(ctx, Event{DeliveryID: "a", Kind: "push", Repo: "o/r", Payload: []byte("{}")})
