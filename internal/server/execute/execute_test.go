@@ -243,6 +243,32 @@ func TestRunsWaitWhileTheDiskIsNearlyFullAndGoOnWhenSpaceReturns(t *testing.T) {
 	}
 }
 
+func TestTheImagesARunWasPlannedWithTravelWithEveryJob(t *testing.T) {
+	e := newEnv(t)
+	e.ex.Images = func(context.Context) (*runnerimages.Snapshot, error) {
+		snap, err := runnerimages.Embedded()
+		snap.Images["ubuntu24"].Version = "29990101.7" // what the server polled
+		return snap, err
+	}
+	run := e.queue(t, "imgs", twoJobs, nil)
+	e.start(t)
+	e.wait(t, run.ID)
+	e.m.mu.Lock()
+	defer e.m.mu.Unlock()
+	if len(e.m.calls) != 2 {
+		t.Fatalf("%d jobs", len(e.m.calls))
+	}
+	for _, c := range e.m.calls {
+		sent, err := runnerimages.ParseSnapshot(c.spec.Images)
+		if err != nil {
+			t.Fatalf("job %s: the images sent: %v", c.spec.Job, err)
+		}
+		if sent.Images["ubuntu24"].Version != "29990101.7" {
+			t.Errorf("job %s got image version %s, want the one the run was planned with", c.spec.Job, sent.Images["ubuntu24"].Version)
+		}
+	}
+}
+
 func TestARunIsPlannedWithTheImagesTheServerPolledAndSurvivesAnUnreadableOne(t *testing.T) {
 	e := newEnv(t)
 	var asked int

@@ -441,6 +441,9 @@ type execution struct {
 	installation int64
 	// release gives up the run's concurrency group; nil when it has none.
 	release func()
+	// imagesJSON is the runner-images snapshot the run was planned with, sent
+	// with every job so the machine plans with the same data.
+	imagesJSON []byte
 	// secrets are the opened values this run's workflow names, sent to each
 	// machine in its assignment; vars the variables of its repository.
 	secrets map[string]string
@@ -509,6 +512,11 @@ func (e *Executor) prepare(ctx context.Context, run store.Run, sink *sink) (_ *e
 		installation: ev.InstallationID}
 	if x.maxParallel < 1 {
 		x.maxParallel = 8
+	}
+	if b, err := images.JSON(); err == nil {
+		x.imagesJSON = b
+	} else {
+		e.log().Warn("the runner-images data could not be sent with the jobs; machines use their own", "run", run.ID, "err", err)
 	}
 	// A workflow with `concurrency:` waits here for the run before it in the
 	// same group (or cancels it); the source is fetched after the wait, so a
@@ -697,7 +705,7 @@ func (x *execution) runInstance(ctx context.Context, inst engine.RemoteInstance)
 	if install == "" {
 		install = "all"
 	}
-	input, err := json.Marshal(wire.InstanceSpec{Workflow: x.run.WorkflowPath, Job: inst.Job.ID, Contexts: contexts, ServiceEnv: svcEnv, Install: install})
+	input, err := json.Marshal(wire.InstanceSpec{Workflow: x.run.WorkflowPath, Job: inst.Job.ID, Contexts: contexts, ServiceEnv: svcEnv, Install: install, Images: x.imagesJSON})
 	if err != nil {
 		return runner.Result{}, err
 	}

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,10 +13,12 @@ import (
 	"strings"
 	"testing"
 
+	"raccoonci/internal/dispatch"
 	"raccoonci/internal/server/oidc"
 	"raccoonci/internal/server/secrets"
 	"raccoonci/internal/server/store"
 	"raccoonci/internal/server/vault"
+	"raccoonci/internal/wire"
 )
 
 const echoSecret = `on: push
@@ -107,6 +110,66 @@ func TestRealRunnerAJobFetchesItsIDToken(t *testing.T) {
 	for _, want := range []string{"sub=repo:acme/web:ref:refs/heads/main", "aud=api://probe", "repository=acme/web", "iss=" + srv.URL + "/oidc"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in the log:\n%s", want, got)
+		}
+	}
+}
+
+// replacingImages is a Machine that swaps the images in a job's assignment
+// (when images is not empty) before handing it to another one.
+type replacingImages struct {
+	inner  Machine
+	images string
+}
+
+func (m replacingImages) Run(ctx context.Context, name string, job dispatch.Job) (dispatch.Result, error) {
+	if m.images != "" {
+		var spec wire.InstanceSpec
+		if err := json.Unmarshal(job.Input, &spec); err != nil {
+			return dispatch.Result{}, err
+		}
+		spec.Images = json.RawMessage(m.images)
+		b, err := json.Marshal(spec)
+		if err != nil {
+			return dispatch.Result{}, err
+		}
+		job.Input = b
+	}
+	return m.inner.Run(ctx, name, job)
+}
+
+// With the real runner, the images data sent with a job is used when it is good
+// and, when it is not, costs only a line in the log.
+func TestRealRunnerTakesTheImagesSentWithTheJobAndSurvivesBadOnes(t *testing.T) {
+	bin := os.Getenv("RACCOONCI_TEST_BIN")
+	if bin == "" {
+		t.Skip("set RACCOONCI_TEST_BIN to a raccoonci binary to run this")
+	}
+	for name, c := range map[string]struct {
+		images  string // replaces what the server sent; "" leaves it
+		wantLog string // in the log, or "" for no warning
+	}{
+		"good data": {"", ""},
+		"bad data":  {`{"images":{"ubuntu24":{"image":"ubuntu22"}}}`, "runner-images data sent with the job is unusable"},
+	} {
+		e := newEnv(t)
+		e.ex.Machine = replacingImages{inner: Local{Binary: bin, Dir: t.TempDir()}, images: c.images}
+		e.ex.Source = tarSource{files: map[string]string{".github/workflows/ci.yml": echoGithubToken}}
+		e.ex.Install = "none"
+		run := e.queue(t, "i", echoGithubToken, nil)
+		e.start(t)
+		if done := e.wait(t, run.ID); done.Conclusion != "success" {
+			t.Fatalf("%s: %q; log: %+v", name, done.Conclusion, e.log(t, run.ID))
+		}
+		var out []string
+		for _, ev := range e.log(t, run.ID) {
+			out = append(out, ev.Text)
+		}
+		got := strings.Join(out, "\n")
+		if c.wantLog != "" && !strings.Contains(got, c.wantLog) {
+			t.Errorf("%s: no %q in the log:\n%s", name, c.wantLog, got)
+		}
+		if c.wantLog == "" && strings.Contains(got, "unusable") {
+			t.Errorf("%s: a warning for good data:\n%s", name, got)
 		}
 	}
 }
