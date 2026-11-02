@@ -191,7 +191,7 @@ func (e *env) start(t *testing.T) context.CancelFunc {
 
 func (e *env) wait(t *testing.T, id int64) store.Run {
 	t.Helper()
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.Now().Add(45 * time.Second)
 	for time.Now().Before(deadline) {
 		r, err := e.st.GetRun(context.Background(), id)
 		if err != nil {

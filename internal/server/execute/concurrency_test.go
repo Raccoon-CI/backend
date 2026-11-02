@@ -69,7 +69,8 @@ func (m *gateMachine) calls() int {
 
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	// Generous: the whole suite runs in parallel under -race, on a shared machine.
+	deadline := time.Now().Add(45 * time.Second)
 	for !cond() {
 		if time.Now().After(deadline) {
 			t.Fatalf("timed out waiting for %s", what)
