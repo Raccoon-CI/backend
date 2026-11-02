@@ -169,8 +169,10 @@ paths:
   /v1/storage:
     get:
       summary: Where an organization's artifacts and caches go (never its keys)
+      description: |
+        `org=*` is the server's own bucket, the one organizations without a bucket of their own use. It is saved like an organization's (tried first, sealed under the master key) and wins over the bucket the server was started with.
       parameters:
-        - {name: org, in: query, required: true, schema: {type: string}}
+        - {name: org, in: query, required: true, schema: {type: string}, description: "an organization, or * for the server's own"}
       responses:
         "200":
           description: "`configured` is false while the organization uses the server's own storage"

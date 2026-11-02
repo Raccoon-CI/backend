@@ -160,7 +160,10 @@ Objects (artifacts and caches) live in a directory under `-data-dir`, or in a bu
 PUT    /v1/storage  {"org":"acme","bucket":"acme-ci","endpoint":"https://<account>.r2.cloudflarestorage.com","region":"auto","prefix":"raccoon","access_key":"…","secret_key":"…"}
 GET    /v1/storage?org=acme        # where it is, never the keys
 DELETE /v1/storage?org=acme        # back to the server's own storage
+PUT    /v1/storage  {"org":"*", ...}   # the server's own bucket, for organizations without one: the same body, `org` is `*`
 ```
+
+The server's own bucket no longer has to be given as flags and environment variables at start: saved with `org: "*"` it is tried and sealed like an organization's, takes effect at once (no restart), and wins over `-storage-s3-*`; deleted, the start-up bucket (or the disk) is the default again. An organization's own bucket still wins over both.
 
 The bucket is tried before its settings are kept (write, read back through a presigned link, delete): one that does not work is refused with the step that failed, one that anyone can read is kept with a warning. The settings and keys are sealed under the master key, in a row only the server reads: a workflow cannot name them, and the secrets API can neither list, overwrite nor delete them. Changing the bucket makes new artifacts and caches go to the new one; what is in the old one stays there, and a cache entry whose object is not in the new bucket is dropped when it is looked up. Needs the master key. Artifacts and caches of an organization with its own bucket go to separate services made on demand.
 

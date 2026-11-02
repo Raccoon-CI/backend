@@ -100,6 +100,33 @@ func TestBadSecretRequestsAreRefusedWithoutEchoingTheValue(t *testing.T) {
 	}
 }
 
+func TestTheServersOwnBucketIsSetThroughTheAPIWithOrgStarAndNeverReadBack(t *testing.T) {
+	a, st := secretsAPI(t)
+	v, _ := vault.New(map[string][]byte{"1": bytes.Repeat([]byte{1}, 32)}, "1")
+	a.Storage = &storage.Service{Store: st, Vault: v, Check: func(context.Context, blob.S3Config) ([]string, error) { return nil, nil }}
+	h := a.Handler()
+	body := `{"org":"*","bucket":"shared-ci","region":"auto","access_key":"AKIASERVER","secret_key":"server-secret-key-material"}`
+	if rec := call(h, "PUT", "/v1/storage", token, body); rec.Code != 200 {
+		t.Fatalf("put: %d %s", rec.Code, rec.Body)
+	}
+	rec := call(h, "GET", "/v1/storage?org=*", token, "")
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"configured":true`) || !strings.Contains(rec.Body.String(), "shared-ci") ||
+		strings.Contains(rec.Body.String(), "server-secret") || strings.Contains(rec.Body.String(), "AKIASERVER") {
+		t.Fatalf("get: %d %s", rec.Code, rec.Body)
+	}
+	for _, scope := range []string{"server", "org:server", "org:*"} {
+		if rec := call(h, "GET", "/v1/secrets?scope="+scope, token, ""); strings.Contains(rec.Body.String(), "STORAGE") {
+			t.Errorf("scope %s lists the bucket's settings: %s", scope, rec.Body)
+		}
+	}
+	if rec := call(h, "DELETE", "/v1/storage?org=*", token, ""); rec.Code != 204 {
+		t.Fatalf("delete: %d", rec.Code)
+	}
+	if rec := call(h, "GET", "/v1/storage?org=*", token, ""); !strings.Contains(rec.Body.String(), `"configured":false`) {
+		t.Fatalf("after delete: %s", rec.Body)
+	}
+}
+
 func TestAnOrganizationsBucketIsTriedKeptSealedAndNeverReadBack(t *testing.T) {
 	a, st := secretsAPI(t)
 	var tried []blob.S3Config

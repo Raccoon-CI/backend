@@ -160,7 +160,10 @@ GET /v1/runs/{id}/artifacts/{artifact}/download   # 302 到一个一小时内有
 PUT    /v1/storage  {"org":"acme","bucket":"acme-ci","endpoint":"https://<账号>.r2.cloudflarestorage.com","region":"auto","prefix":"raccoon","access_key":"…","secret_key":"…"}
 GET    /v1/storage?org=acme        # 在哪里，但不返回密钥
 DELETE /v1/storage?org=acme        # 回到服务端自己的存储
+PUT    /v1/storage  {"org":"*", ...}   # 服务端自己的桶，给没有自己桶的组织用：请求体一样，`org` 写 `*`
 ```
+
+服务端自己的桶不必再用启动参数和环境变量给了：用 `org: "*"` 保存后，它和组织的桶一样先试再封存、立即生效（不用重启），并且优先于 `-storage-s3-*`；删掉后，启动时给的桶（或本机磁盘）又成了默认。组织自己的桶仍然优先于两者。
 
 保存设置之前会先试这个桶（写入、通过预签名链接读回、删除）：不能用的桶会被拒绝，并说明是哪一步失败；任何人都能读的桶会保存下来并给出警告。设置和密钥用主密钥加密，放在只有服务端读的一行里：workflow 引用不到它，密钥 API 也不能列出、覆盖或删除它。换桶之后，新的 artifact 和缓存进新桶；旧桶里的留在原处，对象不在新桶里的缓存条目在被查找时会被丢弃。需要主密钥。有自己桶的组织，它的 artifact 和缓存由按需创建的单独服务处理。
 

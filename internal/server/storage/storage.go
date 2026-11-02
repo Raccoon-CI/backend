@@ -99,7 +99,22 @@ type Service struct {
 	Check func(ctx context.Context, cfg blob.S3Config) (warnings []string, err error)
 }
 
+// ServerDefault is the name that stands for the server's own bucket in Put,
+// View and Delete: the bucket organizations without one of their own use. It
+// is kept the same way an organization's is (sealed under the master key,
+// tried before it is saved), so it does not have to be given as flags and
+// environment variables at start; those still work, and a bucket saved here
+// wins over them.
+const ServerDefault = "*"
+
+// serverScope is the scope the server's own settings are kept under: no
+// organization or repository scope looks like it.
+const serverScope = "server"
+
 func scope(org string) (string, error) {
+	if org == ServerDefault {
+		return serverScope, nil
+	}
 	org = strings.ToLower(org)
 	if !orgName.MatchString(org) {
 		return "", invalid("an organization's name is letters, digits, dots, dashes and underscores")
@@ -202,7 +217,17 @@ func (s *Service) For(ctx context.Context, org string) (cfg *blob.S3Config, vers
 		return nil, "", err
 	}
 	if !ok {
-		return s.Default, "default", nil
+		// No bucket of its own: the one saved for the server, else the one the
+		// server was started with, else the disk.
+		st, version, ok, err = s.load(ctx, serverScope)
+		if err != nil {
+			return nil, "", err
+		}
+		if !ok {
+			return s.Default, "default", nil
+		}
+		c := st.S3()
+		return &c, "server-" + version, nil
 	}
 	c := st.S3()
 	return &c, version, nil

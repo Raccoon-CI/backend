@@ -91,6 +91,58 @@ func TestAnOrganizationsBucketIsCheckedSealedAndUsedForItsRuns(t *testing.T) {
 	}
 }
 
+func TestTheServersOwnBucketCanBeSavedInTheDatabaseAndWinsOverTheStartOnes(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	// Saved like an organization's: tried first, sealed with keys and all.
+	server := Settings{Endpoint: "https://acct.r2.cloudflarestorage.com", Region: "auto", Bucket: "shared-ci", AccessKey: "AKIASERVER", SecretKey: "server-secret-key-material"}
+	if _, err := e.svc.Put(ctx, ServerDefault, server); err != nil {
+		t.Fatal(err)
+	}
+	if len(e.checks) != 1 || e.checks[0].Bucket != "shared-ci" {
+		t.Fatalf("checked as %+v", e.checks)
+	}
+	raw, err := e.st.GetSecret(ctx, "server", settingName)
+	if err != nil || raw.Kind != store.KindStorage || bytes.Contains(raw.Value, []byte("server-secret-key-material")) {
+		t.Fatalf("stored = %+v, %v: must be sealed", raw, err)
+	}
+	// An organization with none now uses it, not the one the server started with.
+	cfg, ver, err := e.svc.For(ctx, "acme")
+	if err != nil || cfg == nil || cfg.Bucket != "shared-ci" || cfg.AccessKey != "AKIASERVER" || !strings.HasPrefix(ver, "server-") {
+		t.Fatalf("for acme: %+v %q %v", cfg, ver, err)
+	}
+	// One with its own bucket still uses its own.
+	e.svc.Put(ctx, "acme", good)
+	if cfg, _, _ := e.svc.For(ctx, "acme"); cfg.Bucket != "acme-ci" {
+		t.Fatalf("an organization's own bucket lost to the server's: %+v", cfg)
+	}
+	if view, err := e.svc.View(ctx, ServerDefault); err != nil || !view.Configured || view.Bucket != "shared-ci" {
+		t.Fatalf("view = %+v, %v", view, err)
+	}
+	// The version moves with the settings.
+	e.st.Now = func() time.Time { return time.Now().Add(time.Second) }
+	server.Bucket = "shared-ci-2"
+	e.svc.Put(ctx, ServerDefault, server)
+	if _, ver2, _ := e.svc.For(ctx, "other"); ver2 == ver {
+		t.Fatalf("the version did not change: %q", ver2)
+	}
+	// Deleted, the start-up bucket is the default again.
+	if ok, _ := e.svc.Delete(ctx, ServerDefault); !ok {
+		t.Fatal("not deleted")
+	}
+	if cfg, ver, _ := e.svc.For(ctx, "other"); cfg.Bucket != "server-bucket" || ver != "default" {
+		t.Fatalf("after delete: %+v %q", cfg, ver)
+	}
+	// A bucket that does not work is not saved as the server's either.
+	e.fail = errors.New("no such bucket")
+	if _, err := e.svc.Put(ctx, ServerDefault, server); err == nil || !errors.Is(err, ErrInvalid) {
+		t.Fatalf("a bad server bucket: %v", err)
+	}
+	if _, err := e.st.GetSecret(ctx, "server", settingName); !errors.Is(err, store.ErrNotFound) {
+		t.Fatal("a bucket that failed its check was kept")
+	}
+}
+
 func TestABucketThatDoesNotWorkIsNotSaved(t *testing.T) {
 	e := newEnv(t)
 	e.fail = errors.New("writing an object: access denied")
