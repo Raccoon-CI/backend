@@ -13,7 +13,7 @@ How to run `raccoonci-server` on a machine of its own: as a systemd service, or 
 
 ## Secrets
 
-Every secret is an environment variable `NAME` or a file named by `NAME_FILE` that only its owner can read (mode 600 or 400; the server refuses a looser file and says so). Never flags. Make them as root, once:
+Every secret is an environment variable `NAME` or a file named by `NAME_FILE` that only its owner can read (mode 600 or 400; the server refuses a looser file and says so; the one exception is systemd's own credentials, which the unit uses: root-owned mode 440 files in `$CREDENTIALS_DIRECTORY`, checked on a real systemd 257). Never flags. Make them as root, once:
 
 ```sh
 sudo install -d -m 0700 /etc/raccoonci

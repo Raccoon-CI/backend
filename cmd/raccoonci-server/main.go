@@ -511,7 +511,7 @@ func githubAuth() (github.TokenSource, string, error) {
 		if err != nil {
 			return nil, "", err
 		}
-		if info.Mode().Perm()&0o077 != 0 {
+		if config.OthersCanRead(keyPath, info) {
 			return nil, "", fmt.Errorf("%s is readable by others; make it 600", keyPath)
 		}
 		pem, err := os.ReadFile(keyPath)

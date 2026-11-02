@@ -6,8 +6,10 @@
 #   sudo systemctl daemon-reload && sudo systemctl enable --now raccoonci-server
 #
 # Secrets are systemd credentials: files that only root can read, handed to the
-# service in a private directory (%d) as files readable by its user alone, which
-# is what the server insists on for every NAME_FILE. They never appear in the
+# service in a private directory (%d) that only its user can open. systemd shows
+# them as root-owned mode 440 with an ACL for that user; the server insists on
+# 600 for every NAME_FILE except these (it accepts root:root group-readable files
+# directly in $CREDENTIALS_DIRECTORY, never ones others can read). They never appear in the
 # environment, the command line or `systemctl show`.
 #
 # Do not use -local-runner under this unit: it runs jobs on the machine as the

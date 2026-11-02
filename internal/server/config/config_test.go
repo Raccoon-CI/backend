@@ -47,6 +47,59 @@ func TestAFileOthersCanReadIsRefused(t *testing.T) {
 	}
 }
 
+// systemd's credentials are mode 440 files (the service's user is admitted by an
+// ACL) in a directory closed to everyone else.
+func TestGroupReadableFileIsAcceptedOnlyInTheClosedCredentialsDirectory(t *testing.T) {
+	dir := t.TempDir()
+	put := func(mode os.FileMode) string {
+		p := filepath.Join(dir, "cred")
+		os.Remove(p)
+		if err := os.WriteFile(p, []byte("v"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		os.Chmod(p, mode)
+		return p
+	}
+	os.Chmod(dir, 0o700)
+	t.Setenv("CREDENTIALS_DIRECTORY", dir)
+
+	// Files of an ordinary user in a directory of the same user are not systemd's.
+	t.Setenv("RC_TEST_G_FILE", put(0o440))
+	if _, err := Secret("RC_TEST_G"); err == nil {
+		t.Error("a group-readable file not owned by root was accepted")
+	}
+	old := rootOwned
+	rootOwned = func(os.FileInfo) bool { return true } // as systemd's are
+	defer func() { rootOwned = old }()
+
+	t.Setenv("RC_TEST_G_FILE", put(0o440))
+	if v, err := Secret("RC_TEST_G"); err != nil || v != "v" {
+		t.Errorf("mode 440 in the closed credentials directory: %q, %v", v, err)
+	}
+	t.Setenv("RC_TEST_G_FILE", put(0o444))
+	if _, err := Secret("RC_TEST_G"); err == nil {
+		t.Error("a file others can read was accepted in the credentials directory")
+	}
+	t.Setenv("RC_TEST_G_FILE", put(0o440))
+	os.Chmod(dir, 0o755)
+	if _, err := Secret("RC_TEST_G"); err == nil {
+		t.Error("accepted although the directory is open to everyone")
+	}
+	os.Chmod(dir, 0o700)
+	// The same mode elsewhere is still refused, even with the variable set.
+	other := write(t, 0o440, "v")
+	t.Setenv("RC_TEST_G_FILE", other)
+	if _, err := Secret("RC_TEST_G"); err == nil {
+		t.Error("mode 440 outside the credentials directory was accepted")
+	}
+	// And without the variable the credentials directory is just a directory.
+	t.Setenv("CREDENTIALS_DIRECTORY", "")
+	t.Setenv("RC_TEST_G_FILE", put(0o440))
+	if _, err := Secret("RC_TEST_G"); err == nil {
+		t.Error("accepted with CREDENTIALS_DIRECTORY unset")
+	}
+}
+
 func TestBothSourcesOrAnEmptyFileAreErrors(t *testing.T) {
 	t.Setenv("RC_TEST_D", "a")
 	t.Setenv("RC_TEST_D_FILE", write(t, 0o600, "b"))
