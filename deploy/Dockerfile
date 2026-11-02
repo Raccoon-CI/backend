@@ -19,6 +19,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}"
 RUN mkdir /out/data
 
 FROM gcr.io/distroless/static-debian12:nonroot
+LABEL org.opencontainers.image.licenses="Apache-2.0"
 COPY --from=build /out/raccoonci-server /raccoonci-server
 # Owned by the nonroot user (65532), so that a fresh volume mounted on /data,
 # which takes this directory's owner, is writable. A directory of the host
