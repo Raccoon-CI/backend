@@ -76,4 +76,4 @@
 - 要创建并安装一个 GitHub App（名字、webhook URL 和 secret、权限、私钥）。私钥和 webhook secret 通过环境变量或文件交给服务端，不打印也不提交；我不会在对话里要它们。
 - webhook 需要一个公网地址，和 `serve -webhook-url` 一样：一台（新加坡的）VPS，加域名和 HTTPS，两个主机名（一个走 Cloudflare 代理，给 webhook 和 API；一个只做 DNS，给 agent 和上传接口）。
 - 只在开发阶段：维护者自己的 R2 存储桶和对应的 S3 API token，通过环境变量或文件交给服务端。做好之后，使用者自带存储桶。
-- 服务端最终跑在哪里（需要能出站访问 GitHub 和 InstaBox，并开放一个入站端口）。
+- 服务端最终跑在哪里（需要能出站访问 GitHub 和 InstaBox，并开放一个入站端口）。怎么在那里跑见 [deploy.zh.md](deploy.zh.md)；选哪台机器由所有者定。

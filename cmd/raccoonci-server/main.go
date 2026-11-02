@@ -175,6 +175,10 @@ Secrets are read from the environment, or from the file named by NAME_FILE (mode
 		return err
 	}
 	dbPath := filepath.Join(*dataDir, "server.db")
+	warnOpenDirectory(*dataDir, log)
+	if err := privateDatabase(dbPath, log); err != nil {
+		return err
+	}
 	st, err := store.OpenSQLite(dbPath)
 	if err != nil {
 		return err

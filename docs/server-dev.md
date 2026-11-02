@@ -6,6 +6,8 @@ State: steps 1 and 2 of `docs/server-design.md`. The server receives GitHub's `p
 
 ## Build and start
 
+(To run it on a machine of its own — systemd, a container, a reverse proxy, backups — see [deploy.md](deploy.md).)
+
 ```sh
 make build                       # dist/raccoonci and dist/raccoonci-server
 raccoonci-server -allow owner/name [-allow owner/*] [-listen 127.0.0.1:18080] [-data-dir DIR] [how to run jobs]

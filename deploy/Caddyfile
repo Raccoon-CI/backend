@@ -1,0 +1,22 @@
+# A reverse proxy in front of the server, with automatic HTTPS (Caddy). See docs/deploy.md.
+# Replace ci.example.com by the host name that points at this machine; it is
+# the address of the GitHub App's webhook, of the machines' agents (-public-url)
+# and of the API.
+#
+# The server listens on 127.0.0.1:18080 (its default) and nothing else needs to
+# be reachable from outside but ports 80 and 443 of this proxy.
+
+ci.example.com {
+	# Artifact and cache uploads come through here, in blocks of up to some
+	# hundred MB, from the machines. Do not put a proxy with a small request
+	# limit in front (Cloudflare's free plan stops at 100 MB per request): give
+	# the machines' address its own host name that is not proxied.
+	request_body {
+		max_size 20GB
+	}
+
+	reverse_proxy 127.0.0.1:18080 {
+		# The log of a run is a stream (server-sent events): do not buffer it.
+		flush_interval -1
+	}
+}

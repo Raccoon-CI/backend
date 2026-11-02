@@ -76,4 +76,4 @@ The frontend starts after step 2, when the API has runs and logs to show. Until 
 - A GitHub App has to be created and installed (name, webhook URL and secret, permissions, private key). The key and the webhook secret are given to the server through environment variables or files that are never printed or committed; I will not ask for them in chat.
 - A public address for the webhook, as with `serve -webhook-url`: a VPS (Singapore) with a domain and HTTPS, two host names (one behind Cloudflare's proxy for the webhook and the API, one DNS-only for the agent and upload endpoints).
 - For development only: the maintainer's R2 bucket and an S3 API token for it, given to the server through environment variables or files. Users of the finished server bring their own.
-- Where the server will really run (it needs outbound access to GitHub and InstaBox and an inbound port).
+- Where the server will really run (it needs outbound access to GitHub and InstaBox and an inbound port). How to run it there is in [deploy.md](deploy.md); which machine is the owner's to say.

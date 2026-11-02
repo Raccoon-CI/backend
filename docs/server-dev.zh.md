@@ -6,6 +6,8 @@
 
 ## 构建和启动
 
+（要把它跑在一台自己的机器上——systemd、容器、反向代理、备份——见 [deploy.zh.md](deploy.zh.md)。）
+
 ```sh
 make build                       # dist/raccoonci 和 dist/raccoonci-server
 raccoonci-server -allow owner/name [-allow owner/*] [-listen 127.0.0.1:18080] [-data-dir DIR] [怎么跑 job]
