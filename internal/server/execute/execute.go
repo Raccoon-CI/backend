@@ -159,8 +159,9 @@ type Executor struct {
 	mu      sync.Mutex
 	cancels map[int64]context.CancelFunc
 
-	gmu    sync.Mutex
-	groups map[string]*cgroup // workflow-level concurrency groups, see concurrency.go
+	gmu       sync.Mutex
+	groups    map[string]*cgroup // concurrency groups, workflow-level and job-level, see concurrency.go
+	holderSeq atomic.Int64       // ids of job-level holders
 
 	slots chan struct{} // the runs that may execute at once (Run); a run waiting for a concurrency group gives its place up
 }
@@ -518,7 +519,8 @@ func (e *Executor) prepare(ctx context.Context, run store.Run, sink *sink) (_ *e
 		return nil, cerr
 	}
 	if group != "" {
-		if release, err = e.enterGroup(ctx, run.Repo, group, run.ID, cancelRunning, sink); err != nil {
+		self := holder{id: run.ID, desc: fmt.Sprintf("run %d", run.ID), cancel: func() { e.Cancel(run.ID) }}
+		if release, err = e.enterGroup(ctx, groupKey("run", run.Repo, group), group, self, cancelRunning, true, sink); err != nil {
 			os.RemoveAll(dir)
 			return nil, err
 		}
@@ -623,6 +625,27 @@ func parseObject(s string) (value.Object, error) {
 // runInstance is engine.Options.Remote: it sends one job instance to a
 // machine, stores what the machine says, and returns how it ended.
 func (x *execution) runInstance(ctx context.Context, inst engine.RemoteInstance) (runner.Result, error) {
+	// A job's own `concurrency:` is entered before the job starts, so a job
+	// that waits has no row, check run or machine yet. jobCtx is cancelled
+	// when a newer job of the group takes this one's place.
+	jobCtx, cancelJob := context.WithCancel(ctx)
+	defer cancelJob()
+	group, cancelRunning, err := jobConcurrencyOf(jobInstance{inst.Job.Concurrency, inst.Needs, inst.Strategy, inst.Matrix}, x)
+	if err != nil {
+		return runner.Result{}, err
+	}
+	if group != "" {
+		self := holder{id: x.e.holderSeq.Add(1), desc: fmt.Sprintf("job %s of run %d", inst.Name, x.run.ID), cancel: cancelJob}
+		release, err := x.e.enterGroup(ctx, groupKey("job", x.run.Repo, group), group, self, cancelRunning, false, x.sink)
+		switch {
+		case errors.Is(err, errSuperseded):
+			x.sink.Add(runner.Event{Kind: runner.Notice, Time: time.Now(), Job: inst.Name, Text: err.Error()})
+			return runner.Result{Conclusion: runner.Cancelled}, nil
+		case err != nil:
+			return runner.Result{}, err
+		}
+		defer release()
+	}
 	job, err := x.e.Store.StartJob(ctx, x.run.ID, inst.Name)
 	if err != nil {
 		return runner.Result{}, err
@@ -682,7 +705,7 @@ func (x *execution) runInstance(ctx context.Context, inst engine.RemoteInstance)
 	defer reader.Flush()
 	secrets, revoke := x.secretsFor(ctx, inst)
 	defer revoke() // the job's GITHUB_TOKEN stops working when the job is over
-	res, err := x.e.Machine.Run(ctx, fmt.Sprintf("rc-r%d-%d", x.run.ID, n), dispatch.Job{
+	res, err := x.e.Machine.Run(jobCtx, fmt.Sprintf("rc-r%d-%d", x.run.ID, n), dispatch.Job{
 		Command: "run-instance",
 		Input:   input,
 		Secrets: secrets,
@@ -698,6 +721,13 @@ func (x *execution) runInstance(ctx context.Context, inst engine.RemoteInstance)
 		Log: reader,
 	})
 	if err != nil {
+		if jobCtx.Err() != nil && ctx.Err() == nil {
+			// A newer job of the job's concurrency group cancelled it.
+			conclusion = runner.Cancelled
+			x.sink.Add(runner.Event{Kind: runner.Notice, Time: time.Now(), Job: inst.Name,
+				Text: "this job was cancelled by a newer job of its concurrency group (cancel-in-progress)"})
+			return runner.Result{Conclusion: runner.Cancelled}, nil
+		}
 		return runner.Result{}, err
 	}
 	if res.Error != "" {
