@@ -3,8 +3,8 @@ package execute
 import (
 	"context"
 
-	"github.com/Raccoon-CI/raccoonci/internal/value"
-	"github.com/Raccoon-CI/raccoonci/internal/workflow"
+	"github.com/Raccoon-CI/raccoonci/pkg/value"
+	"github.com/Raccoon-CI/raccoonci/pkg/workflow"
 )
 
 // TokenMinter makes the token a job gets as GITHUB_TOKEN (github.App): one for

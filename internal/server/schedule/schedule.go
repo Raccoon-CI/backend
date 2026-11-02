@@ -27,8 +27,8 @@ import (
 	"github.com/Raccoon-CI/raccoonci/internal/cron"
 	"github.com/Raccoon-CI/raccoonci/internal/server/github"
 	"github.com/Raccoon-CI/raccoonci/internal/server/store"
-	"github.com/Raccoon-CI/raccoonci/internal/trigger"
-	"github.com/Raccoon-CI/raccoonci/internal/workflow"
+	"github.com/Raccoon-CI/raccoonci/pkg/trigger"
+	"github.com/Raccoon-CI/raccoonci/pkg/workflow"
 )
 
 // refresh is how long what is known about a repository's schedules is kept.

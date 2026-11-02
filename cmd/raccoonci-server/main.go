@@ -20,7 +20,6 @@ import (
 	"time"
 
 	"github.com/Raccoon-CI/raccoonci/internal/blob"
-	"github.com/Raccoon-CI/raccoonci/internal/dispatch"
 	"github.com/Raccoon-CI/raccoonci/internal/instabox"
 	"github.com/Raccoon-CI/raccoonci/internal/runnerimages"
 	"github.com/Raccoon-CI/raccoonci/internal/server/api"
@@ -40,6 +39,7 @@ import (
 	"github.com/Raccoon-CI/raccoonci/internal/server/storage"
 	"github.com/Raccoon-CI/raccoonci/internal/server/store"
 	"github.com/Raccoon-CI/raccoonci/internal/server/vault"
+	"github.com/Raccoon-CI/raccoonci/pkg/dispatch"
 )
 
 // version is set at build time via -ldflags "-X main.version=...".

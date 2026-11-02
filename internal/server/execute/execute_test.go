@@ -14,15 +14,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Raccoon-CI/raccoonci/internal/dispatch"
-	"github.com/Raccoon-CI/raccoonci/internal/runevent"
 	"github.com/Raccoon-CI/raccoonci/internal/runnerimages"
 	"github.com/Raccoon-CI/raccoonci/internal/server/github"
 	"github.com/Raccoon-CI/raccoonci/internal/server/secrets"
 	"github.com/Raccoon-CI/raccoonci/internal/server/store"
 	"github.com/Raccoon-CI/raccoonci/internal/server/vault"
-	"github.com/Raccoon-CI/raccoonci/internal/value"
-	"github.com/Raccoon-CI/raccoonci/internal/wire"
+	"github.com/Raccoon-CI/raccoonci/pkg/dispatch"
+	"github.com/Raccoon-CI/raccoonci/pkg/runevent"
+	"github.com/Raccoon-CI/raccoonci/pkg/value"
+	"github.com/Raccoon-CI/raccoonci/pkg/wire"
 )
 
 const twoJobs = `on: push

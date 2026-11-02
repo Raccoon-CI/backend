@@ -13,8 +13,8 @@ import (
 
 	"github.com/Raccoon-CI/raccoonci/internal/server/github"
 	"github.com/Raccoon-CI/raccoonci/internal/server/store"
-	"github.com/Raccoon-CI/raccoonci/internal/trigger"
-	"github.com/Raccoon-CI/raccoonci/internal/workflow"
+	"github.com/Raccoon-CI/raccoonci/pkg/trigger"
+	"github.com/Raccoon-CI/raccoonci/pkg/workflow"
 )
 
 // RequestError is a refusal the caller can act on: Status is the HTTP status

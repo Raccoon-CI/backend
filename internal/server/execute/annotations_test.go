@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Raccoon-CI/raccoonci/internal/dispatch"
-	"github.com/Raccoon-CI/raccoonci/internal/runevent"
 	"github.com/Raccoon-CI/raccoonci/internal/server/github"
-	"github.com/Raccoon-CI/raccoonci/internal/wire"
+	"github.com/Raccoon-CI/raccoonci/pkg/dispatch"
+	"github.com/Raccoon-CI/raccoonci/pkg/runevent"
+	"github.com/Raccoon-CI/raccoonci/pkg/wire"
 )
 
 func TestAnnotationOf(t *testing.T) {

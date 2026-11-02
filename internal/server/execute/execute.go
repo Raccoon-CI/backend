@@ -1,8 +1,8 @@
 // Package execute runs the queued runs of the server: for each it fetches the
 // repository at the run's commit, resolves the workflow's jobs with the
 // engine, and sends every job instance to a machine of the compute provider
-// (internal/dispatch protocol, `raccoonci run-instance` on the machine).
-// Events come back over the internal/wire protocol and are stored as the run's
+// (pkg/dispatch protocol, `raccoonci run-instance` on the machine).
+// Events come back over the pkg/wire protocol and are stored as the run's
 // log.
 //
 // The engine runs in this process, one goroutine graph per run, as `raccoonci
@@ -27,17 +27,17 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/Raccoon-CI/raccoonci/internal/catalog"
-	"github.com/Raccoon-CI/raccoonci/internal/dispatch"
-	"github.com/Raccoon-CI/raccoonci/internal/jobgraph"
-	"github.com/Raccoon-CI/raccoonci/internal/runevent"
 	"github.com/Raccoon-CI/raccoonci/internal/runnerimages"
 	"github.com/Raccoon-CI/raccoonci/internal/server/github"
 	"github.com/Raccoon-CI/raccoonci/internal/server/secrets"
 	"github.com/Raccoon-CI/raccoonci/internal/server/store"
-	"github.com/Raccoon-CI/raccoonci/internal/value"
-	"github.com/Raccoon-CI/raccoonci/internal/wire"
-	"github.com/Raccoon-CI/raccoonci/internal/workflow"
+	"github.com/Raccoon-CI/raccoonci/pkg/catalog"
+	"github.com/Raccoon-CI/raccoonci/pkg/dispatch"
+	"github.com/Raccoon-CI/raccoonci/pkg/jobgraph"
+	"github.com/Raccoon-CI/raccoonci/pkg/runevent"
+	"github.com/Raccoon-CI/raccoonci/pkg/value"
+	"github.com/Raccoon-CI/raccoonci/pkg/wire"
+	"github.com/Raccoon-CI/raccoonci/pkg/workflow"
 )
 
 // Machine runs one dispatch.Job on a machine of the compute provider and

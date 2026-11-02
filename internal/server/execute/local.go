@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/Raccoon-CI/raccoonci/internal/archive"
-	"github.com/Raccoon-CI/raccoonci/internal/dispatch"
+	"github.com/Raccoon-CI/raccoonci/pkg/dispatch"
 )
 
 // Local runs a job on the machine the server runs on, as this user, by

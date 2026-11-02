@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Raccoon-CI/raccoonci/internal/runevent"
 	"github.com/Raccoon-CI/raccoonci/internal/server/github"
 	"github.com/Raccoon-CI/raccoonci/internal/server/store"
+	"github.com/Raccoon-CI/raccoonci/pkg/runevent"
 )
 
 // Statuser sets a commit status (github.Client).

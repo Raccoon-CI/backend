@@ -13,12 +13,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Raccoon-CI/raccoonci/internal/dispatch"
 	"github.com/Raccoon-CI/raccoonci/internal/server/oidc"
 	"github.com/Raccoon-CI/raccoonci/internal/server/secrets"
 	"github.com/Raccoon-CI/raccoonci/internal/server/store"
 	"github.com/Raccoon-CI/raccoonci/internal/server/vault"
-	"github.com/Raccoon-CI/raccoonci/internal/wire"
+	"github.com/Raccoon-CI/raccoonci/pkg/dispatch"
+	"github.com/Raccoon-CI/raccoonci/pkg/wire"
 )
 
 const echoSecret = `on: push

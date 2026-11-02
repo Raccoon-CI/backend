@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/Raccoon-CI/raccoonci/internal/server/store"
-	"github.com/Raccoon-CI/raccoonci/internal/workflow"
+	"github.com/Raccoon-CI/raccoonci/pkg/workflow"
 )
 
 func parseWF(t *testing.T, text string) *workflow.Workflow {
