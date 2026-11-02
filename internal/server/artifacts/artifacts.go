@@ -96,6 +96,10 @@ type Config struct {
 	// (default 90 days); MaxKeep, if set, caps what a client may ask for.
 	Keep    time.Duration
 	MaxKeep time.Duration
+	// Free, with MinFree, refuses new artifacts while the disk of Dir has less
+	// than MinFree bytes available (the spool of every service lives there).
+	Free    func() (int64, error)
+	MinFree int64
 	Log     *slog.Logger
 }
 
@@ -150,7 +154,8 @@ func New(c Config) (*Service, error) {
 
 func (s *Service) newInstance(st blob.Store, dir *blob.Dir, scope string) (*instance, error) {
 	cfg := artifact.Config{Store: st, Signer: s.signer, BaseURL: s.cfg.PublicURL,
-		SpoolDir: filepath.Join(s.cfg.Dir, "spool"), Keep: s.cfg.Keep, MaxKeep: s.cfg.MaxKeep}
+		SpoolDir: filepath.Join(s.cfg.Dir, "spool"), Keep: s.cfg.Keep, MaxKeep: s.cfg.MaxKeep,
+		Free: s.cfg.Free, MinFree: s.cfg.MinFree}
 	if s.cfg.Records != nil {
 		cfg.Index = recordIndex{recs: s.cfg.Records, scope: scope}
 	}

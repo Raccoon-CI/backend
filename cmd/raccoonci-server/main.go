@@ -245,6 +245,7 @@ Secrets are read from the environment, or from the file named by NAME_FILE (mode
 		}
 		arts, err := artifacts.New(artifacts.Config{Dir: filepath.Join(*dataDir, "artifacts"), PublicURL: base,
 			Records: st, Keep: keep, MaxKeep: keep, Log: log,
+			Free: execute.DiskFree(*dataDir), MinFree: int64(*minFreeMB) << 20,
 			S3For: s3For, RunOrg: func(ctx context.Context, runID int64) (string, error) {
 				run, err := st.GetRun(ctx, runID)
 				if err != nil {
