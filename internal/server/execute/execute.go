@@ -143,6 +143,9 @@ type Executor struct {
 	// Checks, if set, gets a check run per job instance for events that carry a
 	// GitHub App installation (a plain token cannot write check runs).
 	Checks CheckRunner
+	// Tokens, if set, makes each job instance a GITHUB_TOKEN of its own (a
+	// GitHub App installation token for the run's repository); see secretsFor.
+	Tokens TokenMinter
 	// Secrets, if set, gives each run its secrets and variables.
 	Secrets SecretsSource
 	Log     *slog.Logger
@@ -664,7 +667,7 @@ func (x *execution) runInstance(ctx context.Context, inst engine.RemoteInstance)
 	res, err := x.e.Machine.Run(ctx, fmt.Sprintf("rc-r%d-%d", x.run.ID, n), dispatch.Job{
 		Command: "run-instance",
 		Input:   input,
-		Secrets: x.secrets,
+		Secrets: x.secretsFor(ctx, inst),
 		Source: func(w io.Writer) error {
 			f, err := os.Open(x.sourceTar)
 			if err != nil {
@@ -692,6 +695,36 @@ func (x *execution) runInstance(ctx context.Context, inst engine.RemoteInstance)
 	}
 	conclusion = out.Conclusion
 	return out, nil
+}
+
+// secretsFor is the run's secrets plus, when the server can make one, the
+// GITHUB_TOKEN of this job instance: a token for the run's repository alone,
+// with the permissions the job (or workflow) asks for, read-only by default.
+// A pull request from a fork gets none, like it gets no secrets. When the App
+// lacks a permission the job asks for, the job gets the default token and a
+// warning says so; when no token can be made the job runs without and a
+// warning says so (the token itself is never in the log).
+func (x *execution) secretsFor(ctx context.Context, inst engine.RemoteInstance) map[string]string {
+	if x.e.Tokens == nil || x.installation == 0 || x.run.Fork {
+		return x.secrets
+	}
+	warn := func(format string, a ...any) {
+		x.sink.Add(runner.Event{Kind: runner.Warning, Time: time.Now(), Job: inst.Name, Text: fmt.Sprintf(format, a...)})
+	}
+	want := tokenPermissions(x.w, inst.Job)
+	tok, err := x.e.Tokens.RunToken(ctx, x.installation, x.run.Repo, want)
+	if err != nil && !maps.Equal(want, defaultPermissions) {
+		warn("the GitHub App cannot give the permissions this job asks for (%v): it gets a token with the default ones", err)
+		tok, err = x.e.Tokens.RunToken(ctx, x.installation, x.run.Repo, defaultPermissions)
+	}
+	if err != nil {
+		warn("no GITHUB_TOKEN could be made for this job: %v", err)
+		return x.secrets
+	}
+	out := make(map[string]string, len(x.secrets)+1)
+	maps.Copy(out, x.secrets)
+	out["GITHUB_TOKEN"] = tok
+	return out
 }
 
 func orEmpty(o value.Object) value.Object {

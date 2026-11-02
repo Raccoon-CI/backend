@@ -77,7 +77,7 @@ GET    /v1/tokens    DELETE /v1/tokens/{id}                                     
 - A run gets the secrets its workflow names literally (`secrets.NAME`, `secrets['NAME']`), the repository's over the organization's of the same name. A secret reached by a computed name, or by passing all of `secrets` on, is not sent. Names are kept in capitals; names starting with `GITHUB_` are not allowed.
 - A pull request from another repository (or one whose fork was deleted) gets **no secrets**, and its log says so. It still gets variables.
 - A `read` token reads runs, jobs, logs and events; an `admin` token also starts, cancels and repeats runs and manages secrets, variables and tokens. Only a hash of a token is kept.
-- `secrets.GITHUB_TOKEN` is not made by the server: a secret of that name is not allowed, so it is empty.
+- `GITHUB_TOKEN` (`secrets.GITHUB_TOKEN`, `github.token`) is made by the server **only with a GitHub App** (`-job-token`, default on): each job instance gets an installation token of its own for the run's repository alone, expiring in an hour. Its permissions are the job's `permissions:`, else the workflow's, else the server's default, **read-only contents** (GitHub's own default may be read and write); a mapping names what it wants and the rest is none, `read-all`/`write-all` work, and names an App token cannot have (`id-token`...) are dropped. If the App lacks a permission the job asks for, the job gets the default token and a warning in its log; if no token can be made it runs without one, also with a warning. A pull request from a fork gets none, like it gets no secrets. A plain token (`RACCOONCI_GITHUB_TOKEN`) is never passed on to jobs. A secret of that name cannot be stored. Not tried against real GitHub: no App is registered yet.
 
 ## Status on GitHub
 
@@ -154,7 +154,7 @@ The bucket is tried before its settings are kept (write, read back through a pre
 
 - The commit is the one the event is about. For a `pull_request` run the source is GitHub's merge of the head into the base (`refs/pull/N/merge`, as GitHub's own runners see it); the ref appears a moment after the event, so it is asked for up to 4 times, 2 s apart, and when it never comes (the two conflict) the **head** is run instead and the log says so. The `github.sha` value is still the head commit, not the merge commit's id.
 - The source comes from GitHub's archive of the commit: no `.git` directory, no history.
-- `secrets.GITHUB_TOKEN` is empty. Artifacts and caches work (see the next sections).
+- `GITHUB_TOKEN` exists only with a GitHub App (see Secrets). Artifacts and caches work (see the next sections).
 - `github.run_number` counts the workflow's runs started by an event, as on GitHub (per repository and workflow file); a rerun keeps the number of the run it repeats and raises `github.run_attempt` (1, 2, ...). `github.run_id` is the server's run id (a rerun has a new one, unlike GitHub).
 
 ## Checked so far

@@ -78,6 +78,7 @@ func run(args []string) error {
 	imagesEvery := fs.Duration("runner-images-interval", 6*time.Hour, "how often to read what GitHub's hosted runner images preinstall (no token needed); runs are planned with the last good data, else the snapshot built into the binary (0 = never poll)")
 	minFreeMB := fs.Int("min-free-mb", 1024, "keep queued runs waiting while the data directory's disk has less than this many MiB free (0 = no check)")
 	maxSourceMB := fs.Int("max-source-mb", 2048, "fail a run whose repository source package is bigger than this many MiB")
+	jobToken := fs.Bool("job-token", true, "with a GitHub App, give each job its own GITHUB_TOKEN: an installation token for the run's repository only, read-only unless the workflow's permissions: say more (never for a pull request from a fork); a plain token is never passed on to jobs")
 	checks := fs.Bool("checks", true, "with a GitHub App, also make a check run per job (raccoonci / <workflow> / <job>); needs the App's Checks write permission; a plain token cannot, and gets none")
 	localRunner := fs.String("local-runner", "", "run jobs on THIS machine with this raccoonci binary, as this user and without isolation: for development and trusted code only")
 	s3Bucket := fs.String("storage-s3-bucket", "", "keep artifacts and caches in this S3-compatible bucket (R2, S3, ...) instead of on this disk; the bucket must be private (it is checked at start)")
@@ -301,6 +302,9 @@ Secrets are read from the environment, or from the file named by NAME_FILE (mode
 		ex.MaxSourceBytes = int64(*maxSourceMB) << 20
 		if *checks {
 			ex.Checks = gh
+		}
+		if app, ok := tokens.(*github.App); ok && *jobToken {
+			ex.Tokens = app
 		}
 		if secretsSvc != nil {
 			ex.Secrets = secretsSvc

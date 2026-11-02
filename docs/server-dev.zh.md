@@ -77,7 +77,7 @@ GET    /v1/tokens    DELETE /v1/tokens/{id}                                     
 - run 只拿到 workflow 里按字面写出的密钥（`secrets.NAME`、`secrets['NAME']`），同名时仓库的优先于组织的。通过拼出来的名字、或把整个 `secrets` 传下去才能读到的密钥不会发送。名字统一存成大写；不允许以 `GITHUB_` 开头。
 - 来自别的仓库（或 fork 已被删除）的 pull request 的 run **拿不到任何密钥**，日志里会写明。变量还是能拿到。
 - `read` token 能读 run、job、日志和事件；`admin` token 还能启动、取消、重跑 run，管理密钥、变量和 token。token 只保存哈希。
-- `secrets.GITHUB_TOKEN` 不是服务端生成的：这个名字的密钥是不允许的，所以它是空的。
+- `GITHUB_TOKEN`（`secrets.GITHUB_TOKEN`、`github.token`）**只有用 GitHub App 时**由服务端生成（`-job-token`，默认开）：每个 job 实例拿到一个自己的 installation token，只对这个 run 的仓库有效，一小时过期。权限取 job 的 `permissions:`，没有就取 workflow 的，再没有就用服务端的默认——**只读 contents**（GitHub 自己的默认可能是读写）；写成映射的只给点名的，其余为 none，`read-all`/`write-all` 可用，App token 不可能有的名字（`id-token` 等）会被丢掉。App 没有 job 要的权限时，job 拿默认权限的 token，日志里有警告；一个 token 都做不出来时 job 不带 token 运行，同样有警告。fork 的 pull request 拿不到，和它拿不到密钥一致。普通 token（`RACCOONCI_GITHUB_TOKEN`）绝不会传给 job。这个名字的密钥不能存。还没对真实 GitHub 试过：App 没注册。
 
 ## GitHub 上的状态
 
@@ -154,7 +154,7 @@ DELETE /v1/storage?org=acme        # 回到服务端自己的存储
 
 - 提交是事件所指的那个。`pull_request` 的 run 用的源码是 GitHub 把头合并进基分支的结果（`refs/pull/N/merge`，和 GitHub 自己的 runner 看到的一样）；这个 ref 在事件之后过一会儿才出现，所以最多问 4 次、每次隔 2 秒，一直没有（两者冲突）就改跑**头提交**，日志里会写明。`github.sha` 仍是头提交，不是合并提交的 id。
 - 源码来自 GitHub 对该提交的归档：没有 `.git` 目录，没有历史。
-- `secrets.GITHUB_TOKEN` 是空的。artifact 和 cache 可用（见后面几节）。
+- `GITHUB_TOKEN` 只有用 GitHub App 时才有（见"密钥"一节）。artifact 和 cache 可用（见后面几节）。
 - `github.run_number` 和 GitHub 一样按 workflow 数事件启动的 run（每个仓库、每个 workflow 文件各数各的）；重跑沿用被重跑那个 run 的编号，`github.run_attempt` 加一（1、2……）。`github.run_id` 是服务端的 run id（和 GitHub 不同，重跑会有新的 id）。
 
 ## 目前验证过的
