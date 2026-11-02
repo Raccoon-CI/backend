@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"raccoonci/internal/server/store"
+	"github.com/Raccoon-CI/raccoonci/internal/server/store"
 )
 
 // Runs is what the resolver reads about a run (store.Store).

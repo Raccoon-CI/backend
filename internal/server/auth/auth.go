@@ -34,7 +34,7 @@ import (
 	"strings"
 	"time"
 
-	"raccoonci/internal/server/store"
+	"github.com/Raccoon-CI/raccoonci/internal/server/store"
 )
 
 const (

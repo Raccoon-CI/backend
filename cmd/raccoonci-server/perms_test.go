@@ -9,7 +9,7 @@ import (
 	"syscall"
 	"testing"
 
-	"raccoonci/internal/server/store"
+	"github.com/Raccoon-CI/raccoonci/internal/server/store"
 )
 
 func modeOf(t *testing.T, p string) os.FileMode {

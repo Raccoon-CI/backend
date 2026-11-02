@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"raccoonci/internal/server/store"
+	"github.com/Raccoon-CI/raccoonci/internal/server/store"
 )
 
 func ctx() context.Context { return context.Background() }

@@ -7,10 +7,10 @@ import (
 	"strings"
 	"time"
 
-	"raccoonci/internal/expr"
-	"raccoonci/internal/runevent"
-	"raccoonci/internal/value"
-	"raccoonci/internal/workflow"
+	"github.com/Raccoon-CI/raccoonci/internal/expr"
+	"github.com/Raccoon-CI/raccoonci/internal/runevent"
+	"github.com/Raccoon-CI/raccoonci/internal/value"
+	"github.com/Raccoon-CI/raccoonci/internal/workflow"
 )
 
 // errSuperseded ends a run or job that waited for its concurrency group and was

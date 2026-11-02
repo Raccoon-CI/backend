@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"raccoonci/internal/blob"
+	"github.com/Raccoon-CI/raccoonci/internal/blob"
 )
 
 // dirStore is a local store served by a test server, so the links work.

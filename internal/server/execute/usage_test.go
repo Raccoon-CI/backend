@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"raccoonci/internal/dispatch"
-	"raccoonci/internal/server/store"
-	"raccoonci/internal/wire"
+	"github.com/Raccoon-CI/raccoonci/internal/dispatch"
+	"github.com/Raccoon-CI/raccoonci/internal/server/store"
+	"github.com/Raccoon-CI/raccoonci/internal/wire"
 )
 
 var nov15 = time.Date(2026, 11, 15, 10, 0, 0, 0, time.UTC)

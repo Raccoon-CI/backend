@@ -5,7 +5,7 @@ import (
 	"sort"
 	"time"
 
-	"raccoonci/internal/server/store"
+	"github.com/Raccoon-CI/raccoonci/internal/server/store"
 )
 
 // Quota is the monthly allowances of machine time, in minutes; 0 is none.

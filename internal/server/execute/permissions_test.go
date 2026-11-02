@@ -8,8 +8,8 @@ import (
 	"sync"
 	"testing"
 
-	"raccoonci/internal/server/store"
-	"raccoonci/internal/workflow"
+	"github.com/Raccoon-CI/raccoonci/internal/server/store"
+	"github.com/Raccoon-CI/raccoonci/internal/workflow"
 )
 
 func parseWF(t *testing.T, text string) *workflow.Workflow {

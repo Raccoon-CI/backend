@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"raccoonci/internal/runnerimages"
-	"raccoonci/internal/server/store"
+	"github.com/Raccoon-CI/raccoonci/internal/runnerimages"
+	"github.com/Raccoon-CI/raccoonci/internal/server/store"
 )
 
 type fakeSource struct {

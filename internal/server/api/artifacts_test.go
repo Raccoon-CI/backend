@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"raccoonci/internal/artifact"
+	"github.com/Raccoon-CI/raccoonci/internal/artifact"
 )
 
 type fakeArtifacts struct {

@@ -17,9 +17,9 @@ import (
 	"strings"
 	"time"
 
-	"raccoonci/internal/server/intake"
-	"raccoonci/internal/server/secrets"
-	"raccoonci/internal/server/store"
+	"github.com/Raccoon-CI/raccoonci/internal/server/intake"
+	"github.com/Raccoon-CI/raccoonci/internal/server/secrets"
+	"github.com/Raccoon-CI/raccoonci/internal/server/store"
 )
 
 //go:embed openapi.yaml

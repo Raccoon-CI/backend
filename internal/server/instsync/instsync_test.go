@@ -7,8 +7,8 @@ import (
 	"slices"
 	"testing"
 
-	"raccoonci/internal/server/github"
-	"raccoonci/internal/server/store"
+	"github.com/Raccoon-CI/raccoonci/internal/server/github"
+	"github.com/Raccoon-CI/raccoonci/internal/server/store"
 )
 
 type fakeGH struct {

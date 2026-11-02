@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"raccoonci/internal/server/store"
+	"github.com/Raccoon-CI/raccoonci/internal/server/store"
 )
 
 type fakeSignIn struct{ logins, callbacks int }

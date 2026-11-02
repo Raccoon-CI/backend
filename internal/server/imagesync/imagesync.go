@@ -16,9 +16,9 @@ import (
 	"log/slog"
 	"time"
 
-	"raccoonci/internal/catalog"
-	"raccoonci/internal/runnerimages"
-	"raccoonci/internal/server/store"
+	"github.com/Raccoon-CI/raccoonci/internal/catalog"
+	"github.com/Raccoon-CI/raccoonci/internal/runnerimages"
+	"github.com/Raccoon-CI/raccoonci/internal/server/store"
 )
 
 // documentName is the stored snapshot.

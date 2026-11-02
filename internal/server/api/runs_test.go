@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"raccoonci/internal/server/intake"
-	"raccoonci/internal/server/store"
+	"github.com/Raccoon-CI/raccoonci/internal/server/intake"
+	"github.com/Raccoon-CI/raccoonci/internal/server/store"
 )
 
 type fakeDispatcher struct {

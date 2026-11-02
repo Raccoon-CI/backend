@@ -27,17 +27,17 @@ import (
 	"sync/atomic"
 	"time"
 
-	"raccoonci/internal/catalog"
-	"raccoonci/internal/dispatch"
-	"raccoonci/internal/jobgraph"
-	"raccoonci/internal/runevent"
-	"raccoonci/internal/runnerimages"
-	"raccoonci/internal/server/github"
-	"raccoonci/internal/server/secrets"
-	"raccoonci/internal/server/store"
-	"raccoonci/internal/value"
-	"raccoonci/internal/wire"
-	"raccoonci/internal/workflow"
+	"github.com/Raccoon-CI/raccoonci/internal/catalog"
+	"github.com/Raccoon-CI/raccoonci/internal/dispatch"
+	"github.com/Raccoon-CI/raccoonci/internal/jobgraph"
+	"github.com/Raccoon-CI/raccoonci/internal/runevent"
+	"github.com/Raccoon-CI/raccoonci/internal/runnerimages"
+	"github.com/Raccoon-CI/raccoonci/internal/server/github"
+	"github.com/Raccoon-CI/raccoonci/internal/server/secrets"
+	"github.com/Raccoon-CI/raccoonci/internal/server/store"
+	"github.com/Raccoon-CI/raccoonci/internal/value"
+	"github.com/Raccoon-CI/raccoonci/internal/wire"
+	"github.com/Raccoon-CI/raccoonci/internal/workflow"
 )
 
 // Machine runs one dispatch.Job on a machine of the compute provider and

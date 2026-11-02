@@ -28,7 +28,7 @@ func internalDeps(t *testing.T, dir string, seen map[string]bool) {
 		}
 		for _, imp := range parsed.Imports {
 			path, _ := strconv.Unquote(imp.Path.Value)
-			rest, ok := strings.CutPrefix(path, "raccoonci/")
+			rest, ok := strings.CutPrefix(path, "github.com/Raccoon-CI/raccoonci/")
 			if !ok || seen[path] {
 				continue
 			}
@@ -47,7 +47,7 @@ func TestServerDoesNotDependOnTheRunnerSide(t *testing.T) {
 		internalDeps(t, dir, seen)
 	}
 	for _, bad := range []string{"runner", "engine", "scan", "provision", "actions", "docker", "local", "missing", "nodejs", "runnercmd"} {
-		if seen["raccoonci/internal/"+bad] {
+		if seen["github.com/Raccoon-CI/raccoonci/internal/"+bad] {
 			t.Errorf("the backend depends on internal/%s", bad)
 		}
 	}

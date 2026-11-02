@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"raccoonci/internal/server/store"
-	"raccoonci/internal/server/vault"
+	"github.com/Raccoon-CI/raccoonci/internal/server/store"
+	"github.com/Raccoon-CI/raccoonci/internal/server/vault"
 )
 
 func newService(t *testing.T) (*Service, *store.SQLite) {

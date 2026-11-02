@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"raccoonci/internal/server/github"
-	"raccoonci/internal/server/store"
+	"github.com/Raccoon-CI/raccoonci/internal/server/github"
+	"github.com/Raccoon-CI/raccoonci/internal/server/store"
 )
 
 type fakeSource struct {

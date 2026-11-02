@@ -13,7 +13,7 @@ import (
 	"log/slog"
 	"time"
 
-	"raccoonci/internal/server/store"
+	"github.com/Raccoon-CI/raccoonci/internal/server/store"
 )
 
 // batch is how many runs one write transaction takes, so that a first sweep

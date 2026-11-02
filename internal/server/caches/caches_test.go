@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"raccoonci/internal/artifact"
-	"raccoonci/internal/blob"
+	"github.com/Raccoon-CI/raccoonci/internal/artifact"
+	"github.com/Raccoon-CI/raccoonci/internal/blob"
 )
 
 func TestSpaceRules(t *testing.T) {

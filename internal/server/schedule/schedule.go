@@ -24,11 +24,11 @@ import (
 	"sync"
 	"time"
 
-	"raccoonci/internal/cron"
-	"raccoonci/internal/server/github"
-	"raccoonci/internal/server/store"
-	"raccoonci/internal/trigger"
-	"raccoonci/internal/workflow"
+	"github.com/Raccoon-CI/raccoonci/internal/cron"
+	"github.com/Raccoon-CI/raccoonci/internal/server/github"
+	"github.com/Raccoon-CI/raccoonci/internal/server/store"
+	"github.com/Raccoon-CI/raccoonci/internal/trigger"
+	"github.com/Raccoon-CI/raccoonci/internal/workflow"
 )
 
 // refresh is how long what is known about a repository's schedules is kept.

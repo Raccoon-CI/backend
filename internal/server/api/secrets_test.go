@@ -11,11 +11,11 @@ import (
 	"strings"
 	"testing"
 
-	"raccoonci/internal/blob"
-	"raccoonci/internal/server/secrets"
-	"raccoonci/internal/server/storage"
-	"raccoonci/internal/server/store"
-	"raccoonci/internal/server/vault"
+	"github.com/Raccoon-CI/raccoonci/internal/blob"
+	"github.com/Raccoon-CI/raccoonci/internal/server/secrets"
+	"github.com/Raccoon-CI/raccoonci/internal/server/storage"
+	"github.com/Raccoon-CI/raccoonci/internal/server/store"
+	"github.com/Raccoon-CI/raccoonci/internal/server/vault"
 )
 
 func secretsAPI(t *testing.T) (*API, *store.SQLite) {
