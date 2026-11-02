@@ -242,3 +242,45 @@ func TestChangedFilesAndUnknown(t *testing.T) {
 		t.Fatalf("an uncomparable base must be unknown (nil), got %v, %v", unknown, err)
 	}
 }
+
+func TestCheckRunsAreMadeAndCompleted(t *testing.T) {
+	var made, patched map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "POST" && r.URL.Path == "/repos/o/r/check-runs":
+			json.NewDecoder(r.Body).Decode(&made)
+			w.WriteHeader(201)
+			fmt.Fprint(w, `{"id":77}`)
+		case r.Method == "PATCH" && r.URL.Path == "/repos/o/r/check-runs/77":
+			json.NewDecoder(r.Body).Decode(&patched)
+			fmt.Fprint(w, `{"id":77}`)
+		default:
+			t.Errorf("request %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+	c := &Client{Base: srv.URL, Tokens: StaticToken("tok")}
+	id, err := c.CreateCheckRun(context.Background(), 0, "o/r", "abc", CheckRun{Name: "raccoonci / CI / build", Status: CheckInProgress, StartedAt: time.Unix(1000, 0), Title: "Running", Summary: "s"})
+	if err != nil || id != 77 {
+		t.Fatalf("id = %d, %v", id, err)
+	}
+	if made["head_sha"] != "abc" || made["status"] != "in_progress" || made["started_at"] == nil || made["conclusion"] != nil {
+		t.Fatalf("create body = %v", made)
+	}
+	huge := strings.Repeat("x", 70000)
+	err = c.UpdateCheckRun(context.Background(), 0, "o/r", id, CheckRun{Name: "n", Status: CheckCompleted, Conclusion: CheckFailure, Summary: huge})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _ := patched["output"].(map[string]any)
+	if patched["conclusion"] != "failure" || patched["head_sha"] != nil || out == nil || len(out["summary"].(string)) > 65535 {
+		t.Fatalf("update body = %v", patched)
+	}
+	nf := httptest.NewServer(http.NotFoundHandler())
+	defer nf.Close()
+	c = &Client{Base: nf.URL, Tokens: StaticToken("tok")}
+	if _, err := c.CreateCheckRun(context.Background(), 0, "o/r", "abc", CheckRun{Name: "n", Status: CheckQueued}); err == nil || !strings.Contains(err.Error(), "cannot write checks") {
+		t.Fatalf("err = %v", err)
+	}
+}

@@ -16,6 +16,7 @@ import (
 
 	"raccoonci/internal/dispatch"
 	"raccoonci/internal/runner"
+	"raccoonci/internal/server/github"
 	"raccoonci/internal/server/secrets"
 	"raccoonci/internal/server/store"
 	"raccoonci/internal/server/vault"
@@ -122,6 +123,8 @@ type env struct {
 	src *fakeSource
 	m   *fakeMachine
 	ex  *Executor
+	// installation is the App installation of queued events (default 42; 0 is a plain token).
+	installation *int64
 }
 
 func newEnv(t *testing.T) *env {
@@ -138,7 +141,11 @@ func newEnv(t *testing.T) *env {
 
 func (e *env) queue(t *testing.T, delivery, workflowText string, edit func(*store.Run)) store.Run {
 	t.Helper()
-	ev, _, err := e.st.RecordEvent(context.Background(), store.Event{DeliveryID: delivery, Kind: "push", Repo: "acme/web", InstallationID: 42,
+	inst := int64(42)
+	if e.installation != nil {
+		inst = *e.installation
+	}
+	ev, _, err := e.st.RecordEvent(context.Background(), store.Event{DeliveryID: delivery, Kind: "push", Repo: "acme/web", InstallationID: inst,
 		Payload: []byte(`{"ref":"refs/heads/main","repository":{"full_name":"acme/web"}}`)})
 	if err != nil {
 		t.Fatal(err)
@@ -481,6 +488,97 @@ func (f *fakeReporter) states() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.got...)
+}
+
+type fakeChecks struct {
+	mu   sync.Mutex
+	got  []string
+	next int64
+	fail bool
+}
+
+func (f *fakeChecks) CreateCheckRun(_ context.Context, inst int64, repo, sha string, r github.CheckRun) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.fail {
+		return 0, errors.New("no checks permission")
+	}
+	f.got = append(f.got, fmt.Sprintf("create %d %s %s %s", inst, repo, r.Name, r.Status))
+	f.next++
+	return f.next, nil
+}
+
+func (f *fakeChecks) UpdateCheckRun(_ context.Context, inst int64, repo string, id int64, r github.CheckRun) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.got = append(f.got, fmt.Sprintf("update %d %s %s", id, r.Name, r.Conclusion))
+	return nil
+}
+
+func (f *fakeChecks) lines() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.got...)
+}
+
+func waitLines(f *fakeChecks, n int) []string {
+	deadline := time.Now().Add(5 * time.Second)
+	for len(f.lines()) < n && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	return f.lines()
+}
+
+func TestEachJobGetsACheckRunCompletedWithItsConclusion(t *testing.T) {
+	e := newEnv(t)
+	checks := &fakeChecks{}
+	e.ex.Checks = checks
+	e.m.handle = func(c call, out *wire.Encoder) (dispatch.Result, error) {
+		conclusion := runner.Success
+		if c.spec.Job == "test" {
+			conclusion = runner.Failure
+		}
+		out.Write(wire.Line{Result: &wire.Result{Conclusion: conclusion, Outputs: json.RawMessage(`{}`)}})
+		return dispatch.Result{}, nil
+	}
+	run := e.queue(t, "chk", twoJobs, nil)
+	e.start(t)
+	e.wait(t, run.ID)
+	got := strings.Join(waitLines(checks, 4), "\n")
+	for _, want := range []string{
+		"create 42 acme/web raccoonci / CI / build in_progress",
+		"update 1 raccoonci / CI / build success",
+		"create 42 acme/web raccoonci / CI / test in_progress",
+		"update 2 raccoonci / CI / test failure",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+}
+
+func TestNoCheckRunsWithoutAnInstallationAndAFailingOneDoesNotFailTheRun(t *testing.T) {
+	e := newEnv(t)
+	checks := &fakeChecks{}
+	e.ex.Checks = checks
+	// An event without an installation (a plain token) cannot write check runs.
+	none := int64(0)
+	e.installation = &none
+	run := e.queue(t, "tok", twoJobs, nil)
+	e.start(t)
+	e.wait(t, run.ID)
+	time.Sleep(100 * time.Millisecond)
+	if got := checks.lines(); len(got) != 0 {
+		t.Fatalf("check runs without an installation: %v", got)
+	}
+
+	e2 := newEnv(t)
+	e2.ex.Checks = &fakeChecks{fail: true}
+	run2 := e2.queue(t, "fail", twoJobs, nil)
+	e2.start(t)
+	if end := e2.wait(t, run2.ID); end.Conclusion != "success" {
+		t.Fatalf("a failing check run must not fail the run: %q", end.Conclusion)
+	}
 }
 
 func TestARunIsReportedPendingThenItsEndInThatOrderWhateverTheSpeed(t *testing.T) {

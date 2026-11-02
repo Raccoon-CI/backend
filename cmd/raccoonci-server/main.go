@@ -73,6 +73,7 @@ func run(args []string) error {
 	publicURL := fs.String("public-url", "", "the https address the machines reach this server at (their job assignments, artifacts); needed to run jobs")
 	snapshot := fs.String("snapshot", os.Getenv("RACCOONCI_INSTABOX_SNAPSHOT"), "the InstaBox runner snapshot machines start from (env RACCOONCI_INSTABOX_SNAPSHOT); needed to run jobs")
 	status := fs.Bool("status", true, "report each run to GitHub as a commit status (raccoonci / <workflow>) on the commit it ran; the token or App needs to write commit statuses")
+	checks := fs.Bool("checks", true, "with a GitHub App, also make a check run per job (raccoonci / <workflow> / <job>); needs the App's Checks write permission; a plain token cannot, and gets none")
 	localRunner := fs.String("local-runner", "", "run jobs on THIS machine with this raccoonci binary, as this user and without isolation: for development and trusted code only")
 	s3Bucket := fs.String("storage-s3-bucket", "", "keep artifacts and caches in this S3-compatible bucket (R2, S3, ...) instead of on this disk; the bucket must be private (it is checked at start)")
 	s3Endpoint := fs.String("storage-s3-endpoint", "", "the bucket's endpoint, for an S3-compatible store (R2: https://<account>.r2.cloudflarestorage.com); empty for AWS")
@@ -278,6 +279,9 @@ Secrets are read from the environment, or from the file named by NAME_FILE (mode
 			WorkDir: filepath.Join(*dataDir, "work"), Log: log}
 		if *status {
 			ex.Reporter = execute.Statuses{GH: gh}
+		}
+		if *checks {
+			ex.Checks = gh
 		}
 		if secretsSvc != nil {
 			ex.Secrets = secretsSvc

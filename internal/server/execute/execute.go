@@ -127,6 +127,9 @@ type Executor struct {
 	Poll time.Duration
 	// Reporter, if set, is told when a run starts and how it ended.
 	Reporter Reporter
+	// Checks, if set, gets a check run per job instance for events that carry a
+	// GitHub App installation (a plain token cannot write check runs).
+	Checks CheckRunner
 	// Secrets, if set, gives each run its secrets and variables.
 	Secrets SecretsSource
 	Log     *slog.Logger
@@ -374,6 +377,8 @@ type execution struct {
 	sourceTar   string
 	maxParallel int
 	n           atomic.Int32
+	// installation is the GitHub App installation of the run's event, 0 for none.
+	installation int64
 	// secrets are the opened values this run's workflow names, sent to each
 	// machine in its assignment; vars the variables of its repository.
 	secrets map[string]string
@@ -428,7 +433,8 @@ func (e *Executor) prepare(ctx context.Context, run store.Run, sink *sink) (*exe
 		return nil, err
 	}
 	x := &execution{e: e, run: run, log: e.log().With("run", run.ID), sink: sink, w: w, inputs: inputs, images: images, dir: dir,
-		github: githubContext(run, payload), maxParallel: e.MaxParallel, secrets: secretValues, vars: vars}
+		github: githubContext(run, payload), maxParallel: e.MaxParallel, secrets: secretValues, vars: vars,
+		installation: ev.InstallationID}
 	if x.maxParallel < 1 {
 		x.maxParallel = 8
 	}
@@ -472,7 +478,13 @@ func (x *execution) runInstance(ctx context.Context, inst engine.RemoteInstance)
 		return runner.Result{}, err
 	}
 	conclusion := runner.Failure
+	check := x.startCheck(inst.Name)
 	defer func() {
+		if ctx.Err() != nil {
+			check.finish(runner.Cancelled)
+		} else {
+			check.finish(conclusion)
+		}
 		if err := x.e.Store.FinishJob(context.Background(), job.ID, string(conclusion)); err != nil {
 			x.log.Error("recording the end of a job failed", "job", inst.Name, "err", err)
 		}
