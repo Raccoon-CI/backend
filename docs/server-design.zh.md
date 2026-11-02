@@ -14,17 +14,17 @@
 - 只能引用将来会进共用库仓库的包：`value`、`workflow`、`expr`、`trigger`、`plan`、`catalog`、`scan`、`affected`，以及 `dispatch` 的协议类型。需要这个清单之外的东西时，先决定它放在哪里再用。
 - 对外的一切都放在服务端自己定义的小接口后面：数据库（`store`）、对象存储（`blob.Store`，已有）、算力（`Provider`，`instabox` 里已有）、源码（`Source`）、GitHub（`GitHub`）。测试用的假实现放在接口旁边。
 - 前端和 CLI 只通过 HTTP API 和服务端通信：JSON over HTTP，仓库里放一份 OpenAPI 文件，日志用 server-sent events。和前端不共用 Go 类型。
-- 控制器与 agent 之间的协议（`internal/dispatch`）是带版本号的公开协议。现在 agent 跑的是 `raccoonci run-instance`；拆分后 runner 仓库实现 agent 一侧，backend 实现控制器一侧，两边只通过这份协议接触。版本号是真的，而且会检查（`dispatch.ProtocolVersion`，请求头 `X-Raccoonci-Protocol`；任务本身用 `wire.Version`）：agent 带上自己的版本，控制器回答自己的版本；比控制器新的 agent 会被拒绝并说明原因，它的 run 立刻结束。不带版本的 agent（它出现之前造的都是）算版本 1。规则：只加可选内容的改动不升版本；改变已有字段或路由的含义、或删掉它，要升版本，控制器同时支持从 `MinProtocolVersion` 到自己的所有版本。这很重要，因为机器是用快照做的，快照可能比调用它的控制器旧。
+- 控制器与 agent 之间的协议（`pkg/dispatch`）是带版本号的公开协议。现在 agent 跑的是 `raccoonci run-instance`；拆分后 runner 仓库实现 agent 一侧，backend 实现控制器一侧，两边只通过这份协议接触。版本号是真的，而且会检查（`dispatch.ProtocolVersion`，请求头 `X-Raccoonci-Protocol`；任务本身用 `wire.Version`）：agent 带上自己的版本，控制器回答自己的版本；比控制器新的 agent 会被拒绝并说明原因，它的 run 立刻结束。不带版本的 agent（它出现之前造的都是）算版本 1。规则：只加可选内容的改动不升版本；改变已有字段或路由的含义、或删掉它，要升版本，控制器同时支持从 `MinProtocolVersion` 到自己的所有版本。这很重要，因为机器是用快照做的，快照可能比调用它的控制器旧。
 
 ## 组成部分
 
-1. **事件入口。** 一个 GitHub App（webhook 事件 `push`、`pull_request`、`create`、`delete`，`workflow_dispatch` 通过 API；需要 Checks 和 Contents 权限）。每次投递先验签（HMAC-SHA256，常量时间比较）再读取，原始载荷连同投递 id 一起存下来（重复投递不会重复处理），然后处理。`schedule:` 由服务端自己的 cron 触发（解析器是 `internal/cron`，将来进库；`internal/server/schedule` 负责到点触发）。
+1. **事件入口。** 一个 GitHub App（webhook 事件 `push`、`pull_request`、`create`、`delete`，`workflow_dispatch` 通过 API；需要 Checks 和 Contents 权限）。每次投递先验签（HMAC-SHA256，常量时间比较）再读取，原始载荷连同投递 id 一起存下来（重复投递不会重复处理），然后处理。`schedule:` 由服务端自己的 cron 触发（解析器是 `pkg/cron`，将来进库；`internal/server/schedule` 负责到点触发）。
 2. **触发匹配。** 对事件所在提交上的每个 workflow 文件调用 `trigger.Match`；变更文件来自 compare 接口（未知就表示"不过滤"）。匹配上就创建一个 run。`workflow_dispatch` 来自 API，输入有类型（`trigger.DispatchInputs`）。
 3. **run 和 job。** run 记录事件、提交、该提交上的 workflow 文件原文（存下来，重跑用的是同一份文本）和它的 job 实例。状态：queued、in progress、completed，加一个结论。第一版把 engine 放在进程内（见"engine 与重启"）。
 4. **源码。** 通过 App 的 installation token 取该提交的 tarball，按 `dispatch.TarDir` 的布局重新打包，agent 收到的和今天收到的一样。pull request 用合并 ref（`refs/pull/N/merge`），它在事件之后过一会儿 GitHub 才生成；服务端短时间重试，之后退回头提交，并在 run 里说明。自己把 base 合并进 head 不在范围内。
 5. **执行。** `engine.Run` 配上 `Options.Remote`，和今天的 `run -on instabox` 完全一样，区别是控制器、artifact/cache 服务和算力提供方属于服务端，而不是某个命令。agent 协议和 `instabox.Provider`/`Pool` 直接复用。
 6. **日志与结果。** 每个实例的每个 `runner.Event` 按块、按顺序追加存储（runner 已经打过码），并推给订阅者。实时查看用 server-sent events，从某个块偏移量开始；已结束的日志是普通读取。job 输出和结果进数据库。
-7. **artifact 与 cache。** `internal/artifact` 和 `internal/cache` 换成持久的元数据存储（用数据库替代内存和 `index.json`）和 S3 兼容的对象存储，由**用户自己提供**，按组织配置：Cloudflare R2、AWS S3 或任何 S3 兼容存储（`blob.S3` 配 `Endpoint` 和 `PathStyle`）。项目不替任何人托管数据，也没有生产环境的默认桶。没配桶时服务端退回本地目录（`blob.Dir`），够单机和试用。配置按密钥保存（第 9 项），保存时做一次检查：写入、预签名、读取、删除一个小对象，哪一步失败就给出明确的错误。我们自己的开发环境通过环境变量用维护者的 R2 桶，那只是测试用的夹具，不是默认值。下载是预签名链接，不经过服务端（R2 也不收出站流量费）。保留期由服务端自己删除来实现，不能依赖用户可能没设的生命周期规则。上传仍然要经过服务端，因为 toolkit 说的是 Azure Blob 的分块协议，没法直接给它一个 R2 地址；接收上传的主机不能放在 Cloudflare 代理后面（免费套餐单个请求限 100 MB）。这就是 TODO B.3 里"等有服务端再做"的那份清单：持久化、保留期、按分支隔离的缓存、每个 index 只有一个写入者。
+7. **artifact 与 cache。** `pkg/artifact` 和 `pkg/cache` 换成持久的元数据存储（用数据库替代内存和 `index.json`）和 S3 兼容的对象存储，由**用户自己提供**，按组织配置：Cloudflare R2、AWS S3 或任何 S3 兼容存储（`blob.S3` 配 `Endpoint` 和 `PathStyle`）。项目不替任何人托管数据，也没有生产环境的默认桶。没配桶时服务端退回本地目录（`blob.Dir`），够单机和试用。配置按密钥保存（第 9 项），保存时做一次检查：写入、预签名、读取、删除一个小对象，哪一步失败就给出明确的错误。我们自己的开发环境通过环境变量用维护者的 R2 桶，那只是测试用的夹具，不是默认值。下载是预签名链接，不经过服务端（R2 也不收出站流量费）。保留期由服务端自己删除来实现，不能依赖用户可能没设的生命周期规则。上传仍然要经过服务端，因为 toolkit 说的是 Azure Blob 的分块协议，没法直接给它一个 R2 地址；接收上传的主机不能放在 Cloudflare 代理后面（免费套餐单个请求限 100 MB）。这就是 TODO B.3 里"等有服务端再做"的那份清单：持久化、保留期、按分支隔离的缓存、每个 index 只有一个写入者。
 8. **回报给 GitHub。** 每个 job 实例一个 check run，走 Checks API（状态、结论、标题、来自 `$GITHUB_STEP_SUMMARY` 的摘要，有 problem matcher 之后再加 annotations）。check run 的更新最多每隔几秒一次。
 9. **密钥与变量。** 静态加密，信封密钥来自服务端配置，按组织和仓库区分；只在派发实例时解密；不进日志也不进 API 响应；机器拿不到桶或算力提供方的密钥。来自 fork 的 pull request 拿不到密钥。
 10. **认证。** 用户通过 GitHub 登录（App 的 OAuth）；API 通过 GitHub 确认用户能否看到这个仓库。CLI 用个人 API token。机器用 `dispatch` 的每任务 token。
