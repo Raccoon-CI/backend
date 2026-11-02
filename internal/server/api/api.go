@@ -43,6 +43,9 @@ type API struct {
 	// Storage keeps each organization's bucket behind /v1/storage; nil
 	// switches those routes off.
 	Storage StorageAdmin
+	// Artifacts lists and links a run's artifacts; nil switches those routes
+	// off (503).
+	Artifacts ArtifactStore
 	// Token is the bootstrap token: it has the admin role and is how the
 	// first tokens are made. Tokens made through the API live in Store. With
 	// neither, the API is closed (503).
@@ -101,6 +104,8 @@ func (a *API) routes() []route {
 		{"POST /v1/runs/{id}/rerun", a.rerunRun, admin},
 		{"GET /v1/runs/{id}/jobs", a.listJobs, read},
 		{"GET /v1/runs/{id}/log", a.readLog, read},
+		{"GET /v1/runs/{id}/artifacts", a.listArtifacts, read},
+		{"GET /v1/runs/{id}/artifacts/{artifact}/download", a.downloadArtifact, read},
 		{"GET /v1/events/{id}", a.getEvent, read},
 		{"GET /v1/secrets", a.listSecrets(store.KindSecret), admin},
 		{"PUT /v1/secrets", a.putSecret(store.KindSecret), admin},

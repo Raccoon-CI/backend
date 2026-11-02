@@ -97,6 +97,21 @@ A run sets the commit status `raccoonci / <workflow name>` on the commit it ran:
 
 InstaBox limits how many machines an organization starts a minute (10 on the Pro plan) and refuses more with 429. `-starts-per-minute` (default 10, 0 = no count of our own) makes the server count its starts in a sliding 62-second window and make the next one wait its turn, so a burst of runs is spread out instead of failing; after a 429 all starts wait 20 seconds and the refused one is asked again (up to about 7 minutes). The log says `waited … for the machine start limit`. The count is the server's own: starts by other users of the same InstaBox organization are only noticed through a 429.
 
+## Artifacts
+
+`actions/upload-artifact` and `download-artifact` (v4) work, and a finished artifact is kept in the database (its name, size, job, the time it expires) beside its data in the store, so a restart does not forget it. What a user does with them:
+
+```sh
+GET /v1/runs/{id}/artifacts                       # [{id, name, job, size, digest, created_at, expires_at}]
+GET /v1/runs/{id}/artifacts/{artifact}/download   # 302 to a link that works for an hour, straight to the storage
+```
+
+Both need a token with the `read` role. An artifact is kept 90 days, or less if the step says `retention-days`; `-artifact-retention-days N` changes the default and caps what a step may ask for. A sweep every hour (and at start) deletes what has expired, data and record. Notes:
+
+- Each artifact service (the server's disk, and every organization's bucket) has its own records. If an organization changes its bucket, the artifacts in the old one are no longer listed, and when their time is up the records are forgotten but the objects stay in the old bucket: delete them there if that matters.
+- An upload that was never finished is not remembered; if the server stops in the middle of one, the pieces already in the bucket stay there (a bucket lifecycle rule for incomplete multipart uploads cleans them; the server does not).
+- The client's sha256 is stored and shown, not verified. No artifact v3 (the older REST protocol).
+
 ## Restarts
 
 A run that was in progress when the server stopped is started again **from the beginning**, not resumed: on SIGTERM each run in progress is cancelled (its machines are deleted, which takes a few seconds) and goes back to the queue, and after a crash the runs left in progress are queued at the next start. The run's log gets a warning ("the server stopped while this ran; it is started again … attempt N"), the earlier attempt's lines stay in it, and GitHub's status stays `pending` meanwhile. A run is taken at most 3 times; after that it ends as failed. A run someone cancelled stays cancelled. After a crash the machines of the old attempt are not known any more; they are deleted by InstaBox at their 2-hour deadline.
@@ -126,7 +141,7 @@ The bucket is tried before its settings are kept (write, read back through a pre
 
 - The commit is the one the event is about; for a pull request that is its **head**, not the merge commit GitHub would use.
 - The source comes from GitHub's archive of the commit: no `.git` directory, no history.
-- `secrets.GITHUB_TOKEN` is empty. Artifacts work, but their metadata is in memory, so a restart forgets them (their data stays in the store). Caches work (next section).
+- `secrets.GITHUB_TOKEN` is empty. Artifacts and caches work (see the next sections).
 - `github.run_number` is the run id.
 
 ## Checked so far
@@ -141,5 +156,6 @@ The bucket is tried before its settings are kept (write, read back through a pre
 - **Secrets:** through the tunnel, a secret and a variable were stored and listed (the secret by name only), a `read` token got 200 on runs and 403 on secrets, a revoked token stopped working. With the real runner (`RACCOONCI_TEST_BIN=dist/raccoonci go test ./internal/server/execute -run Real`): a step printed `token=[***]` for the secret and `region=[eu]` for the variable, the secret's value appeared nowhere in the log, and a fork's run printed an empty token. Not run on a real GitHub-triggered workflow that uses a secret (no workflow file can be added with the token at hand).
 - **Start limit on InstaBox** (`-starts-per-minute 2`, four runs of `bench-lint-docs` started at once): two machines were up in 9–11 s, the other two waited 1 m 0.5 s and 1 m 1.5 s for the limit and then started; all four runs succeeded and no machine was left. A real 429 from InstaBox was not seen (the retry after one is tested against a fake API only).
 - **Restarts on InstaBox:** a run killed with the server mid-run (the server was stopped while its machine was being created) was queued again at the next start and succeeded on attempt 2; a SIGTERM during a run took about 15 s to finish (the machine is deleted first), logged `queued again`, and the run succeeded on attempt 2 after the restart. Both were `bench-lint-docs`, a few seconds into the run; a restart late in a long run was not tried.
+- **Artifact records:** tested against SQLite with the real upload protocol (upload, restart, list, download, expiry sweep); live only for the migration on the existing database and the three routes (200 with an empty list, 404, 404). No job that uploads an artifact was run on the server: none of the benchmark workflows does, and the token cannot add one.
 - **Schedules:** unit-tested only (the clock is passed in). No repository at hand has a `schedule:` workflow and the token cannot add one, so a real fire was not seen.
 - **Not tried:** a bucket (no access key for the dev R2 bucket was given, so the S3 path of artifacts and caches and the bucket check are tested only against fakes), artifacts uploaded by a real job, a run created from a delivery GitHub sent, a real pull request, App authentication against real GitHub, artifacts from a real job, a run with a matrix.

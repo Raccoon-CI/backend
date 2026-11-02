@@ -329,6 +329,45 @@ paths:
                         started_at: {type: string, format: date-time}
                         completed_at: {type: string, format: date-time}
         "404": {$ref: "#/components/responses/Error"}
+  /v1/runs/{id}/artifacts:
+    get:
+      summary: The finished artifacts of a run
+      description: What the run's `upload-artifact` steps stored. Kept until `expires_at` (90 days unless the step asks for less; the server may cap it), then deleted.
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: integer}}
+      responses:
+        "200":
+          description: the artifacts, oldest first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  artifacts:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: {type: integer}
+                        name: {type: string}
+                        job: {type: string, description: "the job instance that uploaded it"}
+                        size: {type: integer, description: "bytes, as stored (the zip)"}
+                        digest: {type: string, description: "the client's sha256, recorded and not verified"}
+                        created_at: {type: string, format: date-time}
+                        expires_at: {type: string, format: date-time}
+        "404": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Error"}
+  /v1/runs/{id}/artifacts/{artifact}/download:
+    get:
+      summary: Download an artifact
+      description: Redirects (302) to a link that works for an hour and goes straight to the storage. Not cacheable.
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: integer}}
+        - {name: artifact, in: path, required: true, schema: {type: integer}}
+      responses:
+        "302": {description: the link is in the Location header}
+        "404": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Error"}
   /v1/runs/{id}/log:
     get:
       summary: The log of a run

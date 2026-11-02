@@ -80,6 +80,7 @@ func run(args []string) error {
 	s3PathStyle := fs.Bool("storage-s3-path-style", false, "address the bucket as host/bucket/key (most self-hosted stores need it)")
 	masterKeyID := fs.String("master-key-id", "1", "the id of RACCOONCI_MASTER_KEY, written beside every secret it seals")
 	masterKeyOldID := fs.String("master-key-old-id", "", "the id of RACCOONCI_MASTER_KEY_OLD, the key that sealed secrets before a rotation (they are opened with it, new ones sealed with the current key)")
+	artifactDays := fs.Int("artifact-retention-days", 90, "how long an artifact is kept: the default, and the most a workflow may ask for (retention-days); then it is deleted")
 	cacheLimitGB := fs.Int("cache-limit-gb", 5, "how much one cache space (the default branch, or one other ref) may hold, in GB; the least recently used go first")
 	startsPerMinute := fs.Int("starts-per-minute", 10, "how many InstaBox machines may be started a minute (the organization's limit; 10 on the Pro plan): more wait their turn; 0 = no limit of our own (a refusal from InstaBox is still waited out)")
 	schedules := fs.Bool("schedule", true, "fire the runs of `on: schedule:` workflows (on the default branch) for the repositories the server knows; -schedule=false leaves it to GitHub")
@@ -185,7 +186,8 @@ Secrets are read from the environment, or from the file named by NAME_FILE (mode
 
 	// Execution needs three things together: where machines reach the
 	// server, the runner snapshot to start them from, and the InstaBox key.
-	var executed chan struct{}
+	var executed, janitor chan struct{}
+	keep := time.Duration(*artifactDays) * 24 * time.Hour
 	instaboxMode := *publicURL != "" || *snapshot != "" || instaboxKey != ""
 	execution := instaboxMode || *localRunner != ""
 	if instaboxMode && *localRunner != "" {
@@ -229,6 +231,7 @@ Secrets are read from the environment, or from the file named by NAME_FILE (mode
 			machine = execute.Instabox{P: prov}
 		}
 		arts, err := artifacts.New(artifacts.Config{Dir: filepath.Join(*dataDir, "artifacts"), PublicURL: base,
+			Records: st, Keep: keep, MaxKeep: keep, Log: log,
 			S3For: s3For, RunOrg: func(ctx context.Context, runID int64) (string, error) {
 				run, err := st.GetRun(ctx, runID)
 				if err != nil {
@@ -242,6 +245,12 @@ Secrets are read from the environment, or from the file named by NAME_FILE (mode
 		}
 		defer arts.Close()
 		arts.Mount(mux)
+		apiSvc.Artifacts = arts
+		janitor = make(chan struct{})
+		go func() {
+			defer close(janitor)
+			arts.Janitor(ctx, time.Hour)
+		}()
 		cacheSvc, err := caches.New(caches.Config{
 			Dir: filepath.Join(*dataDir, "caches"), PublicURL: base, Signer: arts.Signer(), S3For: s3For,
 			MaxBytes: int64(*cacheLimitGB) << 30,
@@ -317,6 +326,9 @@ Secrets are read from the environment, or from the file named by NAME_FILE (mode
 	hook.Wait()
 	if scheduled != nil {
 		<-scheduled
+	}
+	if janitor != nil {
+		<-janitor
 	}
 	if executed != nil {
 		<-executed // runs in progress are cancelled and recorded

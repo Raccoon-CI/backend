@@ -123,6 +123,22 @@ type Secret struct {
 	UpdatedAt time.Time
 }
 
+// Artifact is a finished artifact of a run. Scope names the artifact service
+// that holds its data ("disk", or "<org>@<bucket version>"); IDs count per scope.
+type Artifact struct {
+	Scope     string
+	ID        int64
+	Run       string // the run's id, as the artifact protocol carries it
+	Job       string
+	Name      string
+	Key       string // where the data is in the scope's store
+	Mime      string
+	Size      int64
+	Digest    string
+	CreatedAt time.Time
+	ExpiresAt time.Time
+}
+
 // Token roles.
 const (
 	RoleRead  = "read"
@@ -208,6 +224,16 @@ type Store interface {
 	ListSecrets(ctx context.Context, scope string) ([]Secret, error)
 	// DeleteSecret reports whether there was one to delete.
 	DeleteSecret(ctx context.Context, scope, name string) (bool, error)
+
+	// PutArtifact stores a finished artifact (replacing one with the same scope and id).
+	PutArtifact(ctx context.Context, a Artifact) error
+	// ListArtifacts returns a scope's artifacts, by id.
+	ListArtifacts(ctx context.Context, scope string) ([]Artifact, error)
+	// DeleteArtifact forgets one; it is not an error if it is not there.
+	DeleteArtifact(ctx context.Context, scope string, id int64) error
+	// ExpiredArtifacts returns the artifacts of every scope whose time to keep
+	// has passed, the oldest expiry first.
+	ExpiredArtifacts(ctx context.Context, now time.Time) ([]Artifact, error)
 
 	// CreateToken records a token by the SHA-256 (hex) of its value.
 	CreateToken(ctx context.Context, name, role, hash string) (APIToken, error)

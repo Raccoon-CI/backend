@@ -6,9 +6,12 @@
 // Where the data lives depends on the organization the run belongs to: in the
 // bucket the organization has given (S3For), else on the server's disk. Each
 // bucket gets an artifact service of its own (made when first needed), and a
-// request is routed to it by the run its token or its path names. The metadata
-// is in memory, so a restart forgets what was uploaded (TODO C.1: persistence,
-// retention); the data stays in the store.
+// request is routed to it by the run its token or its path names. Finished
+// artifacts are remembered in the database (Config.Records), each service under
+// a scope of its own, so a restart keeps them and they can be listed and
+// downloaded through the API; an artifact is deleted when its time to keep
+// (90 days unless the client asks for less, capped by Config.MaxKeep) is up.
+// Uploads in progress are not remembered.
 package artifacts
 
 import (
@@ -16,6 +19,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"path/filepath"
 	"strconv"
@@ -25,7 +29,47 @@ import (
 
 	"raccoonci/internal/artifact"
 	"raccoonci/internal/blob"
+	"raccoonci/internal/server/store"
 )
+
+// Records is what the service needs of the database (store.Store).
+type Records interface {
+	PutArtifact(ctx context.Context, a store.Artifact) error
+	ListArtifacts(ctx context.Context, scope string) ([]store.Artifact, error)
+	DeleteArtifact(ctx context.Context, scope string, id int64) error
+	ExpiredArtifacts(ctx context.Context, now time.Time) ([]store.Artifact, error)
+}
+
+// scopeDisk is the scope of the service on this server's disk.
+const scopeDisk = "disk"
+
+// recordIndex is an artifact.Index over the database, for one scope.
+type recordIndex struct {
+	recs  Records
+	scope string
+}
+
+func (x recordIndex) Load(ctx context.Context) ([]artifact.Record, error) {
+	list, err := x.recs.ListArtifacts(ctx, x.scope)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]artifact.Record, 0, len(list))
+	for _, a := range list {
+		out = append(out, artifact.Record{ID: a.ID, Run: a.Run, Job: a.Job, Name: a.Name, Key: a.Key, Mime: a.Mime,
+			Size: a.Size, Digest: a.Digest, Created: a.CreatedAt, Expires: a.ExpiresAt})
+	}
+	return out, nil
+}
+
+func (x recordIndex) Save(ctx context.Context, r artifact.Record) error {
+	return x.recs.PutArtifact(ctx, store.Artifact{Scope: x.scope, ID: r.ID, Run: r.Run, Job: r.Job, Name: r.Name, Key: r.Key,
+		Mime: r.Mime, Size: r.Size, Digest: r.Digest, CreatedAt: r.Created, ExpiresAt: r.Expires})
+}
+
+func (x recordIndex) Delete(ctx context.Context, id int64) error {
+	return x.recs.DeleteArtifact(ctx, x.scope, id)
+}
 
 // tokenTTL is how long a job's token works: longer than a job may run.
 const tokenTTL = 7 * time.Hour
@@ -45,6 +89,13 @@ type Config struct {
 	RunOrg func(ctx context.Context, runID int64) (string, error)
 	// NewStore makes the store of a bucket; default blob.NewS3 (tests replace it).
 	NewStore func(blob.S3Config) (blob.Store, error)
+	// Records, if set, remembers finished artifacts (see the package comment).
+	Records Records
+	// Keep is how long an artifact is kept when the client does not say
+	// (default 90 days); MaxKeep, if set, caps what a client may ask for.
+	Keep    time.Duration
+	MaxKeep time.Duration
+	Log     *slog.Logger
 }
 
 // Service is the artifact service.
@@ -86,16 +137,20 @@ func New(c Config) (*Service, error) {
 		return nil, err
 	}
 	s := &Service{cfg: c, signer: signer, other: map[string]*instance{}}
-	if s.disk, err = s.newInstance(dir, dir); err != nil {
+	if s.disk, err = s.newInstance(dir, dir, scopeDisk); err != nil {
 		dir.Close()
 		return nil, err
 	}
 	return s, nil
 }
 
-func (s *Service) newInstance(store blob.Store, dir *blob.Dir) (*instance, error) {
-	art, err := artifact.New(artifact.Config{Store: store, Signer: s.signer, BaseURL: s.cfg.PublicURL,
-		SpoolDir: filepath.Join(s.cfg.Dir, "spool")})
+func (s *Service) newInstance(st blob.Store, dir *blob.Dir, scope string) (*instance, error) {
+	cfg := artifact.Config{Store: st, Signer: s.signer, BaseURL: s.cfg.PublicURL,
+		SpoolDir: filepath.Join(s.cfg.Dir, "spool"), Keep: s.cfg.Keep, MaxKeep: s.cfg.MaxKeep}
+	if s.cfg.Records != nil {
+		cfg.Index = recordIndex{recs: s.cfg.Records, scope: scope}
+	}
+	art, err := artifact.New(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -145,11 +200,11 @@ func (s *Service) instanceFor(ctx context.Context, runID int64) (*instance, erro
 	}
 	cfg := *bucket
 	cfg.Prefix += "artifacts/"
-	store, err := s.cfg.NewStore(cfg)
+	st, err := s.cfg.NewStore(cfg)
 	if err != nil {
 		return nil, err
 	}
-	in, err := s.newInstance(store, nil)
+	in, err := s.newInstance(st, nil, key)
 	if err != nil {
 		return nil, err
 	}
@@ -195,6 +250,113 @@ func (s *Service) serveRun(w http.ResponseWriter, r *http.Request, run string) {
 // artifacts only as that job.
 func (s *Service) JobEnv(run int64, job string) (map[string]string, error) {
 	return s.disk.art.Env(artifact.Scope{Run: strconv.FormatInt(run, 10), Job: job}, tokenTTL)
+}
+
+func (s *Service) log() *slog.Logger {
+	if s.cfg.Log != nil {
+		return s.cfg.Log
+	}
+	return slog.New(slog.DiscardHandler)
+}
+
+// ErrNotFound is returned for an artifact that is not there.
+var ErrNotFound = artifact.ErrNoArtifact
+
+// List returns the finished artifacts of a run.
+func (s *Service) List(ctx context.Context, runID int64) ([]artifact.Info, error) {
+	in, err := s.instanceFor(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	return in.art.Artifacts(strconv.FormatInt(runID, 10)), nil
+}
+
+// DownloadURL presigns a link to one finished artifact of a run, for an hour.
+func (s *Service) DownloadURL(ctx context.Context, runID, artifactID int64) (string, error) {
+	in, err := s.instanceFor(ctx, runID)
+	if err != nil {
+		return "", err
+	}
+	return in.art.DownloadURL(ctx, strconv.FormatInt(runID, 10), artifactID, time.Hour)
+}
+
+// Sweep deletes the artifacts whose time is up, data and record, and returns
+// how many. A record that no service holds any more (its bucket was replaced)
+// is only forgotten; one whose service could not be reached is left for the
+// next sweep.
+func (s *Service) Sweep(ctx context.Context, now time.Time) (int, error) {
+	if s.cfg.Records == nil {
+		return 0, nil
+	}
+	due, err := s.cfg.Records.ExpiredArtifacts(ctx, now)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	unreachable := map[string]bool{}
+	seen := map[string]bool{}
+	var firstErr error
+	for _, a := range due {
+		if seen[a.Run] {
+			continue
+		}
+		seen[a.Run] = true
+		id, perr := strconv.ParseInt(a.Run, 10, 64)
+		if perr != nil {
+			continue
+		}
+		in, ierr := s.instanceFor(ctx, id)
+		if ierr != nil {
+			unreachable[a.Run] = true
+			firstErr = errors.Join(firstErr, fmt.Errorf("run %s: %w", a.Run, ierr))
+			continue
+		}
+		c, eerr := in.art.Expire(ctx, now)
+		n += c
+		if eerr != nil {
+			unreachable[a.Run] = true
+			firstErr = errors.Join(firstErr, fmt.Errorf("run %s: %w", a.Run, eerr))
+		}
+	}
+	left, err := s.cfg.Records.ExpiredArtifacts(ctx, now)
+	if err != nil {
+		return n, errors.Join(firstErr, err)
+	}
+	for _, a := range left {
+		if unreachable[a.Run] {
+			continue
+		}
+		if err := s.cfg.Records.DeleteArtifact(ctx, a.Scope, a.ID); err != nil {
+			firstErr = errors.Join(firstErr, err)
+		}
+	}
+	return n, firstErr
+}
+
+// Janitor sweeps every interval (and once at the start) until ctx ends.
+func (s *Service) Janitor(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = time.Hour
+	}
+	sweep := func() {
+		n, err := s.Sweep(ctx, time.Now())
+		if err != nil && ctx.Err() == nil {
+			s.log().Warn("deleting expired artifacts failed", "deleted", n, "err", err)
+		} else if n > 0 {
+			s.log().Info("expired artifacts deleted", "artifacts", n)
+		}
+	}
+	sweep()
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			sweep()
+		}
+	}
 }
 
 // Close stops the service's background work.

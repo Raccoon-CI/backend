@@ -390,6 +390,42 @@ func TestRequeueInterruptedQueuesWhatCanRunAgainAndEndsTheRest(t *testing.T) {
 	}
 }
 
+func TestArtifactsAreKeptPerScopeAndExpire(t *testing.T) {
+	s, ctx := open(t), context.Background()
+	t0 := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+	put := func(scope string, id int64, name string, expires time.Time) {
+		t.Helper()
+		if err := s.PutArtifact(ctx, Artifact{Scope: scope, ID: id, Run: "7", Job: "build", Name: name, Key: "7/" + name,
+			Size: 10, Digest: "sha256:x", CreatedAt: t0, ExpiresAt: expires}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put("disk", 1, "a", t0.Add(time.Hour))
+	put("disk", 2, "b", t0.Add(48*time.Hour))
+	put("acme@1", 1, "c", t0.Add(2*time.Hour)) // the same id in another scope is another artifact
+	got, err := s.ListArtifacts(ctx, "disk")
+	if err != nil || len(got) != 2 || got[0].Name != "a" || got[1].Name != "b" || got[0].Size != 10 || got[0].Digest != "sha256:x" ||
+		!got[0].CreatedAt.Equal(t0) || !got[0].ExpiresAt.Equal(t0.Add(time.Hour)) {
+		t.Fatalf("disk = %+v, %v", got, err)
+	}
+	if got, _ := s.ListArtifacts(ctx, "acme@1"); len(got) != 1 || got[0].Name != "c" {
+		t.Fatalf("acme = %+v", got)
+	}
+	due, err := s.ExpiredArtifacts(ctx, t0.Add(3*time.Hour))
+	if err != nil || len(due) != 2 || due[0].Name != "a" || due[1].Name != "c" {
+		t.Fatalf("due = %+v, %v: oldest expiry first, across scopes", due, err)
+	}
+	if err := s.DeleteArtifact(ctx, "disk", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteArtifact(ctx, "disk", 1); err != nil {
+		t.Fatalf("deleting twice: %v", err)
+	}
+	if got, _ := s.ListArtifacts(ctx, "disk"); len(got) != 1 || got[0].Name != "b" {
+		t.Fatalf("after delete: %+v", got)
+	}
+}
+
 func TestJobsAreRecordedPerRunAndRestartable(t *testing.T) {
 	s, ctx := open(t), context.Background()
 	r := newRun(t, s, "w")

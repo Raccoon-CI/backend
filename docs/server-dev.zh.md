@@ -97,6 +97,21 @@ run 会在它所跑的提交上设置 commit status `raccoonci / <workflow 名>`
 
 InstaBox 限制一个组织每分钟起机的数量（Pro 套餐 10 台），超了回 429。`-starts-per-minute`（默认 10，0 表示自己不计数）让服务端用 62 秒的滑动窗口数自己的起机次数，超了的排队等，所以一阵 run 会被摊开而不是失败；收到 429 后所有起机停 20 秒，被拒的那一次再问（最多约 7 分钟）。日志里会写 `waited … for the machine start limit`。计数只是服务端自己的：同一个 InstaBox 组织里别人起的机器，只能靠 429 才知道。
 
+## Artifact
+
+`actions/upload-artifact` 和 `download-artifact`（v4）可用，一个完成了的 artifact 会和数据一起记进数据库（名字、大小、哪个 job、过期时间），所以重启不会忘。用户这样用：
+
+```sh
+GET /v1/runs/{id}/artifacts                       # [{id, name, job, size, digest, created_at, expires_at}]
+GET /v1/runs/{id}/artifacts/{artifact}/download   # 302 到一个一小时内有效的链接，直接到存储
+```
+
+两个都要 `read` 角色的 token。artifact 保留 90 天，步骤里写了 `retention-days` 就更短；`-artifact-retention-days N` 改默认值，也限制步骤最多能要多久。每小时（和启动时）清理一次过期的，数据和记录一起删。说明：
+
+- 每个 artifact 服务（服务端的磁盘、每个组织自己的桶）各有自己的记录。组织换了桶之后，旧桶里的 artifact 不再列出；到期时只是忘掉记录，对象还留在旧桶里，需要的话请在那边删。
+- 没上传完的不记录；服务在上传中途停掉的话，已经放进桶里的分片会留下（桶上给"未完成的分段上传"设一条生命周期规则就能清；服务端不做）。
+- 客户端给的 sha256 只存和显示，不校验。没有 artifact v3（旧的 REST 协议）。
+
 ## 重启
 
 服务停止时正在进行的 run 会**从头重新开始**，不是接着跑：收到 SIGTERM 时每个进行中的 run 被取消（机器删掉，要几秒），然后回到队列；崩溃的话，下次启动时把还在进行中的 run 放回队列。run 的日志里会有一条警告（"the server stopped while this ran; it is started again … attempt N"），前一次尝试的日志行保留，这期间 GitHub 上的状态一直是 `pending`。一个 run 最多被取走 3 次，之后记为失败。被人取消的 run 仍是已取消。崩溃之后旧一次尝试的机器已经不知道是哪些，由 InstaBox 在 2 小时期限到时删掉。
@@ -126,7 +141,7 @@ DELETE /v1/storage?org=acme        # 回到服务端自己的存储
 
 - 提交是事件所指的那个；pull request 用的是它的**头提交**，不是 GitHub 会用的合并提交。
 - 源码来自 GitHub 对该提交的归档：没有 `.git` 目录，没有历史。
-- `secrets.GITHUB_TOKEN` 是空的。artifact 可用，但元数据在内存里，重启就忘（数据还在存储里）。cache 可用（见下一节）。
+- `secrets.GITHUB_TOKEN` 是空的。artifact 和 cache 可用（见后面几节）。
 - `github.run_number` 就是 run 的 id。
 
 ## 目前验证过的
@@ -141,5 +156,6 @@ DELETE /v1/storage?org=acme        # 回到服务端自己的存储
 - **密钥：** 经隧道存了一个密钥和一个变量并列出（密钥只列名字），`read` token 读 run 得到 200、读密钥得到 403，被吊销的 token 立刻失效。用真正的 runner（`RACCOONCI_TEST_BIN=dist/raccoonci go test ./internal/server/execute -run Real`）：step 对密钥打印出 `token=[***]`，对变量打印出 `region=[eu]`，密钥的值在日志里任何地方都没有出现，fork 的 run 打印的 token 是空的。没在真实的、由 GitHub 触发且用到密钥的 workflow 上跑过（手头的 token 加不了 workflow 文件）。
 - **InstaBox 上的起机限额**（`-starts-per-minute 2`，同时启动 `bench-lint-docs` 的四个 run）：两台机器 9–11 秒就绪，另外两个分别等了 1 分 0.5 秒和 1 分 1.5 秒的限额才起机；四个 run 都成功，没有机器遗留。没有真的收到过 InstaBox 的 429（收到后重试只在假 API 上测过）。
 - **InstaBox 上的重启：**服务在 run 中途被杀（停的时候机器还在创建）后，下次启动把 run 重新排队，第 2 次尝试成功；run 进行中发 SIGTERM，服务约 15 秒后才退出（先删机器），日志写了 `queued again`，重启后 run 第 2 次尝试成功。两次都是 `bench-lint-docs`、run 开始后几秒就停；在长 run 的后段重启没试过。
+- **artifact 记录：**用真实的上传协议和 SQLite 测过（上传、重启、列出、下载、过期清理）；真机只验证了现有数据库上的迁移和三个路由（空列表 200、404、404）。服务端上没有跑过上传 artifact 的 job：基准 workflow 没有一个用它，令牌也加不了 workflow。
 - **定时触发：**只有单测（时钟是传进去的）。手边没有带 `schedule:` 的仓库，令牌也加不了，所以没看到过真实触发。
 - **没试过：** 桶（没有给开发用 R2 桶的访问密钥，所以 artifact 和缓存走 S3 的路径以及桶的检查只用假的测过）、真实 job 上传 artifact、由 GitHub 发出的投递建出的 run、真实的 pull request、App 对真实 GitHub 的认证、真实 job 里的 artifact、带 matrix 的 run。
