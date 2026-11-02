@@ -210,21 +210,21 @@ func (s *SQLite) Repos(ctx context.Context) ([]RepoRef, error) {
 	return out, rows.Err()
 }
 
-const runColumns = `id, event_id, repo, workflow_path, workflow_name, event, ref, sha, base_sha, pull_request, fork, actor, inputs, rerun_of, status, conclusion, created_at, updated_at, attempts`
+const runColumns = `id, event_id, repo, workflow_path, workflow_name, event, ref, sha, base_sha, pull_request, fork, actor, inputs, rerun_of, status, conclusion, created_at, updated_at, attempts, log_purged`
 
 func scanRun(r scanner, withText bool) (Run, error) {
 	var run Run
-	var fork int
+	var fork, purged int
 	var created, updated int64
 	dest := []any{&run.ID, &run.EventID, &run.Repo, &run.WorkflowPath, &run.WorkflowName, &run.Event, &run.Ref, &run.SHA, &run.BaseSHA,
-		&run.PullRequest, &fork, &run.Actor, &run.Inputs, &run.RerunOf, &run.Status, &run.Conclusion, &created, &updated, &run.Attempts}
+		&run.PullRequest, &fork, &run.Actor, &run.Inputs, &run.RerunOf, &run.Status, &run.Conclusion, &created, &updated, &run.Attempts, &purged}
 	if withText {
 		dest = append(dest, &run.WorkflowText)
 	}
 	if err := r.Scan(dest...); err != nil {
 		return Run{}, err
 	}
-	run.Fork = fork != 0
+	run.Fork, run.LogPurged = fork != 0, purged != 0
 	run.CreatedAt, run.UpdatedAt = fromMS(created), fromMS(updated)
 	return run, nil
 }

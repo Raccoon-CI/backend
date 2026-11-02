@@ -79,7 +79,10 @@ type Run struct {
 	WorkflowText string
 	// Attempts is how many times the executor has taken the run: 1 for a run
 	// that ran once, more when a stopped server's run was queued again.
-	Attempts  int
+	Attempts int
+	// LogPurged is set when the run's log lines were deleted after the
+	// retention time.
+	LogPurged bool
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -213,6 +216,10 @@ type Store interface {
 
 	// AppendLog adds lines to a run's log, in order.
 	AppendLog(ctx context.Context, runID int64, lines []LogLine) error
+	// PurgeLogs deletes the log lines of up to limit finished runs that ended
+	// before the given time and marks them (Run.LogPurged). It returns how many
+	// runs and lines; call it again until it returns no runs.
+	PurgeLogs(ctx context.Context, before time.Time, limit int) (runs int, lines int64, err error)
 	// ReadLog returns up to limit lines of a run's log with an id above after.
 	ReadLog(ctx context.Context, runID, after int64, limit int) ([]LogLine, error)
 

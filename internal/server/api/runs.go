@@ -183,11 +183,14 @@ func (a *API) readLog(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = n
 	}
-	if _, err := a.Store.GetRun(r.Context(), id); errors.Is(err, store.ErrNotFound) {
+	if first, err := a.Store.GetRun(r.Context(), id); errors.Is(err, store.ErrNotFound) {
 		fail(w, http.StatusNotFound, "no such run")
 		return
 	} else if err != nil {
 		fail(w, http.StatusInternalServerError, "could not read the run")
+		return
+	} else if first.LogPurged {
+		fail(w, http.StatusGone, "the log of this run was deleted after the retention time")
 		return
 	}
 	if strings.Contains(r.Header.Get("Accept"), "text/event-stream") {

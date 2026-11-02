@@ -97,6 +97,10 @@ run 会在它所跑的提交上设置 commit status `raccoonci / <workflow 名>`
 
 InstaBox 限制一个组织每分钟起机的数量（Pro 套餐 10 台），超了回 429。`-starts-per-minute`（默认 10，0 表示自己不计数）让服务端用 62 秒的滑动窗口数自己的起机次数，超了的排队等，所以一阵 run 会被摊开而不是失败；收到 429 后所有起机停 20 秒，被拒的那一次再问（最多约 7 分钟）。日志里会写 `waited … for the machine start limit`。计数只是服务端自己的：同一个 InstaBox 组织里别人起的机器，只能靠 429 才知道。
 
+## 日志保留
+
+已结束的 run 的日志保留 90 天（`-log-retention-days`，可以写小数，0 表示永久保留）；启动时和之后每小时清理一次，删掉更早结束的 run 的日志行。run、它的 job 和结果都保留，`log_purged` 变为 true，这时 `GET /v1/runs/{id}/log`（以及事件流）回 **410 Gone**，而不是一份空日志。没做：旧 webhook 投递的原始载荷和旧 run 的 workflow 原文还留着（重跑要读它们）；SQLite 把释放的页留着复用，文件本身不会缩小。
+
 ## Artifact
 
 `actions/upload-artifact` 和 `download-artifact`（v4）可用，一个完成了的 artifact 会和数据一起记进数据库（名字、大小、哪个 job、过期时间），所以重启不会忘。用户这样用：
@@ -157,6 +161,7 @@ DELETE /v1/storage?org=acme        # 回到服务端自己的存储
 - **密钥：** 经隧道存了一个密钥和一个变量并列出（密钥只列名字），`read` token 读 run 得到 200、读密钥得到 403，被吊销的 token 立刻失效。用真正的 runner（`RACCOONCI_TEST_BIN=dist/raccoonci go test ./internal/server/execute -run Real`）：step 对密钥打印出 `token=[***]`，对变量打印出 `region=[eu]`，密钥的值在日志里任何地方都没有出现，fork 的 run 打印的 token 是空的。没在真实的、由 GitHub 触发且用到密钥的 workflow 上跑过（手头的 token 加不了 workflow 文件）。
 - **InstaBox 上的起机限额**（`-starts-per-minute 2`，同时启动 `bench-lint-docs` 的四个 run）：两台机器 9–11 秒就绪，另外两个分别等了 1 分 0.5 秒和 1 分 1.5 秒的限额才起机；四个 run 都成功，没有机器遗留。没有真的收到过 InstaBox 的 429（收到后重试只在假 API 上测过）。
 - **InstaBox 上的重启：**服务在 run 中途被杀（停的时候机器还在创建）后，下次启动把 run 重新排队，第 2 次尝试成功；run 进行中发 SIGTERM，服务约 15 秒后才退出（先删机器），日志写了 `queued again`，重启后 run 第 2 次尝试成功。两次都是 `bench-lint-docs`、run 开始后几秒就停；在长 run 的后段重启没试过。
+- **日志保留**（`-log-retention-days 0.01`，在开发库上）：早于 14 分钟的 20 个 run 在启动时被删掉 766 行日志，日志路由回 410，run 显示 `log_purged: true` 且结论还在；12 分钟前的 run 日志还在。之后改回默认的 90 天。
 - **artifact 记录：**用真实的上传协议和 SQLite 测过（上传、重启、列出、下载、过期清理）；真机只验证了现有数据库上的迁移和三个路由（空列表 200、404、404）。服务端上没有跑过上传 artifact 的 job：基准 workflow 没有一个用它，令牌也加不了 workflow。
 - **定时触发：**只有单测（时钟是传进去的）。手边没有带 `schedule:` 的仓库，令牌也加不了，所以没看到过真实触发。
 - **没试过：** 桶（没有给开发用 R2 桶的访问密钥，所以 artifact 和缓存走 S3 的路径以及桶的检查只用假的测过）、真实 job 上传 artifact、由 GitHub 发出的投递建出的 run、真实的 pull request、App 对真实 GitHub 的认证、真实 job 里的 artifact、带 matrix 的 run。

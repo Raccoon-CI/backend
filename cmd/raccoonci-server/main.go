@@ -29,6 +29,7 @@ import (
 	"raccoonci/internal/server/execute"
 	"raccoonci/internal/server/github"
 	"raccoonci/internal/server/intake"
+	"raccoonci/internal/server/retention"
 	"raccoonci/internal/server/schedule"
 	"raccoonci/internal/server/secrets"
 	"raccoonci/internal/server/storage"
@@ -81,6 +82,7 @@ func run(args []string) error {
 	masterKeyID := fs.String("master-key-id", "1", "the id of RACCOONCI_MASTER_KEY, written beside every secret it seals")
 	masterKeyOldID := fs.String("master-key-old-id", "", "the id of RACCOONCI_MASTER_KEY_OLD, the key that sealed secrets before a rotation (they are opened with it, new ones sealed with the current key)")
 	artifactDays := fs.Int("artifact-retention-days", 90, "how long an artifact is kept: the default, and the most a workflow may ask for (retention-days); then it is deleted")
+	logDays := fs.Float64("log-retention-days", 90, "how long the log of a finished run is kept, in days (0: for ever; fractions work); the run and its result stay, the log answers 410 after that")
 	cacheRepoGB := fs.Int("cache-repo-limit-gb", 10, "how much all the cache spaces of one repository may hold together, in GB (0: no cap); checked every 15 minutes, the least recently used go first")
 	cacheDays := fs.Int("cache-max-age-days", 7, "a cache entry nobody has restored for this many days is deleted")
 	cacheLimitGB := fs.Int("cache-limit-gb", 5, "how much one cache space (the default branch, or one other ref) may hold, in GB; the least recently used go first")
@@ -295,6 +297,11 @@ Secrets are read from the environment, or from the file named by NAME_FILE (mode
 	if err := hook.Recover(ctx); err != nil {
 		return fmt.Errorf("looking for deliveries left from before: %w", err)
 	}
+	logsDone := make(chan struct{})
+	go func() {
+		defer close(logsDone)
+		(&retention.Janitor{Store: st, LogKeep: time.Duration(*logDays * float64(24*time.Hour)), Log: log}).Run(ctx, time.Hour)
+	}()
 	var scheduled chan struct{}
 	if *schedules {
 		// Repositories are known from their events; those named exactly in
@@ -335,6 +342,7 @@ Secrets are read from the environment, or from the file named by NAME_FILE (mode
 	if scheduled != nil {
 		<-scheduled
 	}
+	<-logsDone
 	if janitor != nil {
 		<-janitor
 	}

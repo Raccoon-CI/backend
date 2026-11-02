@@ -390,6 +390,54 @@ func TestRequeueInterruptedQueuesWhatCanRunAgainAndEndsTheRest(t *testing.T) {
 	}
 }
 
+func TestPurgeLogsDeletesTheLinesOfOldFinishedRunsOnly(t *testing.T) {
+	s, ctx := open(t), context.Background()
+	t0 := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	s.Now = func() time.Time { return t0 }
+	old, recent, running, queued := newRun(t, s, "old"), newRun(t, s, "recent"), newRun(t, s, "running"), newRun(t, s, "queued")
+	for _, r := range []Run{old, recent, running, queued} {
+		if err := s.AppendLog(ctx, r.ID, []LogLine{{Data: `{"kind":"output"}`}, {Data: `{"kind":"output"}`}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// old ends in August, recent in October, running never ends
+	s.ClaimRun(ctx) // old
+	if err := s.FinishRun(ctx, old.ID, "success"); err != nil {
+		t.Fatal(err)
+	}
+	s.Now = func() time.Time { return t0.Add(90 * 24 * time.Hour) }
+	s.ClaimRun(ctx) // recent
+	s.FinishRun(ctx, recent.ID, "failure")
+	s.ClaimRun(ctx) // running
+
+	cutoff := t0.Add(60 * 24 * time.Hour)
+	runs, lines, err := s.PurgeLogs(ctx, cutoff, 10)
+	if err != nil || runs != 1 || lines != 2 {
+		t.Fatalf("PurgeLogs = %d runs, %d lines, %v; want only the old run", runs, lines, err)
+	}
+	if got, _ := s.GetRun(ctx, old.ID); !got.LogPurged {
+		t.Fatal("the run must say its log is gone")
+	}
+	if got, _ := s.ReadLog(ctx, old.ID, 0, 10); len(got) != 0 {
+		t.Fatalf("lines left: %+v", got)
+	}
+	for _, r := range []Run{recent, running, queued} {
+		if got, _ := s.GetRun(ctx, r.ID); got.LogPurged {
+			t.Fatalf("run %d must keep its log: %+v", r.ID, got)
+		}
+		if got, _ := s.ReadLog(ctx, r.ID, 0, 10); len(got) != 2 {
+			t.Fatalf("run %d lost its lines: %+v", r.ID, got)
+		}
+	}
+	// Nothing is purged twice, and the limit bounds a batch.
+	if runs, _, _ := s.PurgeLogs(ctx, cutoff, 10); runs != 0 {
+		t.Fatalf("second call purged %d", runs)
+	}
+	if runs, lines, _ := s.PurgeLogs(ctx, t0.Add(365*24*time.Hour), 1); runs != 1 || lines != 2 {
+		t.Fatalf("a year on, limit 1: %d runs %d lines (only the finished 'recent' one has a log to lose)", runs, lines)
+	}
+}
+
 func TestArtifactsAreKeptPerScopeAndExpire(t *testing.T) {
 	s, ctx := open(t), context.Background()
 	t0 := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)

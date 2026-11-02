@@ -183,6 +183,33 @@ func TestLogPagesAndSaysWhenItIsDone(t *testing.T) {
 	}
 }
 
+func TestAPurgedLogIsGoneNotEmpty(t *testing.T) {
+	a, st, run := runSetup(t)
+	ctx := context.Background()
+	st.AppendLog(ctx, run.ID, []store.LogLine{{Data: `{"kind":"output","text":"hi"}`}})
+	st.ClaimRun(ctx)
+	st.FinishRun(ctx, run.ID, "success")
+	if _, _, err := st.PurgeLogs(ctx, time.Now().Add(time.Hour), 10); err != nil {
+		t.Fatal(err)
+	}
+	h := a.Handler()
+	path := fmt.Sprintf("/v1/runs/%d/log", run.ID)
+	if rec := do(h, "GET", path, ""); rec.Code != 410 || !strings.Contains(rec.Body.String(), "deleted") {
+		t.Fatalf("log: %d %s", rec.Code, rec.Body)
+	}
+	req := httptest.NewRequest("GET", path, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "text/event-stream")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 410 {
+		t.Fatalf("stream: %d", rec.Code)
+	}
+	if rec := do(h, "GET", fmt.Sprintf("/v1/runs/%d", run.ID), ""); rec.Code != 200 || !strings.Contains(rec.Body.String(), `"log_purged":true`) || !strings.Contains(rec.Body.String(), `"conclusion":"success"`) {
+		t.Fatalf("the run still shows, saying its log is gone: %d %s", rec.Code, rec.Body)
+	}
+}
+
 func TestLogStreamsUntilTheRunEnds(t *testing.T) {
 	a, st, run := runSetup(t)
 	ctx := context.Background()

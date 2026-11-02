@@ -213,6 +213,7 @@ type runJSON struct {
 	PullRequest  int       `json:"pull_request,omitempty"`
 	RerunOf      int64     `json:"rerun_of,omitempty"`
 	Attempts     int       `json:"attempts,omitempty"`
+	LogPurged    bool      `json:"log_purged,omitempty"`
 	Fork         bool      `json:"fork"`
 	Actor        string    `json:"actor"`
 	Status       string    `json:"status"`
@@ -225,7 +226,7 @@ type runJSON struct {
 
 func toRun(r store.Run) runJSON {
 	return runJSON{ID: r.ID, EventID: r.EventID, Repo: r.Repo, WorkflowPath: r.WorkflowPath, WorkflowName: r.WorkflowName,
-		Event: r.Event, Ref: r.Ref, SHA: r.SHA, BaseSHA: r.BaseSHA, PullRequest: r.PullRequest, RerunOf: r.RerunOf, Attempts: r.Attempts, Fork: r.Fork, Actor: r.Actor,
+		Event: r.Event, Ref: r.Ref, SHA: r.SHA, BaseSHA: r.BaseSHA, PullRequest: r.PullRequest, RerunOf: r.RerunOf, Attempts: r.Attempts, LogPurged: r.LogPurged, Fork: r.Fork, Actor: r.Actor,
 		Status: r.Status, Conclusion: r.Conclusion, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt, Workflow: r.WorkflowText}
 }
 

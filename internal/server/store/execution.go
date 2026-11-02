@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"time"
 )
 
 // ClaimRun implements Store. One statement takes the run and marks it, so two
@@ -229,6 +230,49 @@ func (s *SQLite) AppendLog(ctx context.Context, runID int64, lines []LogLine) er
 		}
 	}
 	return tx.Commit()
+}
+
+// PurgeLogs implements Store.
+func (s *SQLite) PurgeLogs(ctx context.Context, before time.Time, limit int) (int, int64, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM runs WHERE status = ? AND log_purged = 0 AND updated_at < ? ORDER BY id LIMIT ?`,
+		RunCompleted, ms(before), limit)
+	if err != nil {
+		return 0, 0, err
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, 0, err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, 0, err
+	}
+	var lines int64
+	for _, id := range ids {
+		res, err := tx.ExecContext(ctx, `DELETE FROM log_lines WHERE run_id = ?`, id)
+		if err != nil {
+			return 0, 0, err
+		}
+		n, _ := res.RowsAffected()
+		lines += n
+		if _, err := tx.ExecContext(ctx, `UPDATE runs SET log_purged = 1 WHERE id = ?`, id); err != nil {
+			return 0, 0, err
+		}
+	}
+	return len(ids), lines, tx.Commit()
 }
 
 // ReadLog implements Store.
