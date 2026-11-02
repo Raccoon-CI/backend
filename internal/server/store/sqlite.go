@@ -288,6 +288,37 @@ func (s *SQLite) GetRun(ctx context.Context, id int64) (Run, error) {
 }
 
 // ListRuns implements Store. The workflow text is left out.
+func (s *SQLite) RunStats(ctx context.Context) (RunStats, error) {
+	out := RunStats{Counts: map[string]map[string]int64{}}
+	rows, err := s.db.QueryContext(ctx, `SELECT status, conclusion, COUNT(*) FROM runs GROUP BY status, conclusion`)
+	if err != nil {
+		return out, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var status, conclusion string
+		var n int64
+		if err := rows.Scan(&status, &conclusion, &n); err != nil {
+			return out, err
+		}
+		if out.Counts[status] == nil {
+			out.Counts[status] = map[string]int64{}
+		}
+		out.Counts[status][conclusion] = n
+	}
+	if err := rows.Err(); err != nil {
+		return out, err
+	}
+	var oldest sql.NullInt64
+	if err := s.db.QueryRowContext(ctx, `SELECT MIN(created_at) FROM runs WHERE status = ?`, RunQueued).Scan(&oldest); err != nil {
+		return out, err
+	}
+	if oldest.Valid {
+		out.OldestQueued = fromMS(oldest.Int64)
+	}
+	return out, nil
+}
+
 func (s *SQLite) ListRuns(ctx context.Context, f RunFilter) ([]Run, error) {
 	q := `SELECT ` + runColumns + ` FROM runs`
 	var where []string

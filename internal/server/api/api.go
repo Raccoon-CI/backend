@@ -105,6 +105,7 @@ func (a *API) routes() []route {
 	return []route{
 		{"GET /healthz", a.health, open},
 		{"GET /readyz", a.ready, open},
+		{"GET /metrics", a.metrics, admin},
 		{"GET /v1/openapi.yaml", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/yaml")
 			w.Write(openapiSpec)

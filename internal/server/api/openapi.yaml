@@ -26,6 +26,19 @@ paths:
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Readiness"}
+  /metrics:
+    get:
+      summary: Metrics for Prometheus (admin)
+      description: |
+        Prometheus' text format, for a monitor to scrape with the bearer token. `raccoonci_check{check}` is 1 or 0 for each readiness check (see `/readyz`), `raccoonci_runs{status,conclusion}` counts the runs the database holds, and `raccoonci_oldest_queued_run_age_seconds` is how long the oldest queued run has waited (0 if none): the number to alert on when runs are not being taken.
+      responses:
+        "200":
+          description: metrics
+          content:
+            text/plain:
+              schema: {type: string}
+        "401": {description: missing or wrong token}
+        "403": {description: the token is not admin}
   /healthz:
     get:
       summary: Liveness, no authentication

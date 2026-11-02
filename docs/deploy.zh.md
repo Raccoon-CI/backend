@@ -107,4 +107,4 @@ chmod 600 /backup/server-*.db
 
 - 数据库和它的文件每次启动都被改成只有服务端的用户可读（模式 600），数据目录能被其他用户进入时服务端会警告：里面有 token 的哈希、GitHub 投递的载荷、日志和封存的密钥。
 - 一个数据目录只能有一个服务端。两个服务端用同一个目录不受支持。
-- 这里没有设置防火墙、journald 之外的日志轮转、监控或告警：服务端有 `/healthz`（进程在）和 `/readyz`（能干活：数据库能写入，数据盘剩余空间大于 `-min-free-mb`；不行时回 503 并写出哪项检查失败，原因只进日志；不需要 token），日志写到标准错误，目前能盯的就这些。Docker 镜像的 `HEALTHCHECK` 运行 `raccoonci-server -check http://127.0.0.1:18080/readyz`；代理或监控的探测请指向 `/readyz`。
+- 这里没有设置防火墙、journald 之外的日志轮转、监控或告警：服务端有 `/healthz`（进程在）和 `/readyz`（能干活：数据库能写入，数据盘剩余空间大于 `-min-free-mb`；不行时回 503 并写出哪项检查失败，原因只进日志；不需要 token），日志写到标准错误，目前能盯的就这些。Docker 镜像的 `HEALTHCHECK` 运行 `raccoonci-server -check http://127.0.0.1:18080/readyz`；代理或监控的探测请指向 `/readyz`。Prometheus 抓取用 `GET /metrics`（admin 的 bearer token；抓取配置里用 `authorization: {credentials_file: …}`），给出 `raccoonci_check{check}`（1/0）、`raccoonci_runs{status,conclusion}` 和 `raccoonci_oldest_queued_run_age_seconds`；对最后一个长时间偏高告警（run 没人取：磁盘检查失败、配额用完，或起不了机器）。

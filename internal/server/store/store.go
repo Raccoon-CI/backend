@@ -30,6 +30,13 @@ const (
 	RunCompleted  = "completed"
 )
 
+// RunStats is what RunStats returns.
+type RunStats struct {
+	// Counts maps status then conclusion ("" while not completed) to a number.
+	Counts       map[string]map[string]int64
+	OldestQueued time.Time
+}
+
 // Event is one webhook delivery.
 type Event struct {
 	ID int64
@@ -207,6 +214,9 @@ type Store interface {
 	// the attempt is 1 for that run and one more for each rerun of it.
 	RunNumbers(ctx context.Context, run Run) (number, attempt int, err error)
 	ListRuns(ctx context.Context, f RunFilter) ([]Run, error)
+	// RunStats counts the runs by status and conclusion, and says when the
+	// oldest queued run was queued (zero if none is), for monitoring.
+	RunStats(ctx context.Context) (RunStats, error)
 
 	// ClaimRun takes the next queued run and marks it in progress, so that two
 	// callers never get the same one. The next one is fair between repositories:
