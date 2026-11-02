@@ -152,6 +152,9 @@ type Executor struct {
 	wg      sync.WaitGroup
 	mu      sync.Mutex
 	cancels map[int64]context.CancelFunc
+
+	gmu    sync.Mutex
+	groups map[string]*cgroup // workflow-level concurrency groups, see concurrency.go
 }
 
 func (e *Executor) log() *slog.Logger {
@@ -301,6 +304,11 @@ func (e *Executor) execute(parent context.Context, run store.Run) {
 
 	x, err := e.prepare(ctx, run, sink)
 	if err != nil {
+		if errors.Is(err, errSuperseded) {
+			sink.Add(runner.Event{Kind: runner.Notice, Time: time.Now(), Text: err.Error()})
+			conclusion = runner.Cancelled
+			return
+		}
 		sink.Add(runner.Event{Kind: runner.Error, Time: time.Now(), Text: err.Error()})
 		if ctx.Err() != nil {
 			conclusion = runner.Cancelled
@@ -308,6 +316,9 @@ func (e *Executor) execute(parent context.Context, run store.Run) {
 		return
 	}
 	defer os.RemoveAll(x.dir)
+	if x.release != nil {
+		defer x.release()
+	}
 
 	res, err := engine.Run(ctx, x.w, engine.Options{
 		Remote:      x.runInstance,
@@ -418,13 +429,21 @@ type execution struct {
 	n           atomic.Int32
 	// installation is the GitHub App installation of the run's event, 0 for none.
 	installation int64
+	// release gives up the run's concurrency group; nil when it has none.
+	release func()
 	// secrets are the opened values this run's workflow names, sent to each
 	// machine in its assignment; vars the variables of its repository.
 	secrets map[string]string
 	vars    value.Object
 }
 
-func (e *Executor) prepare(ctx context.Context, run store.Run, sink *sink) (*execution, error) {
+func (e *Executor) prepare(ctx context.Context, run store.Run, sink *sink) (_ *execution, err error) {
+	var release func() // the concurrency group, given up again if preparing fails
+	defer func() {
+		if err != nil && release != nil {
+			release()
+		}
+	}()
 	w, err := workflow.Parse([]byte(run.WorkflowText))
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", run.WorkflowPath, err)
@@ -480,6 +499,21 @@ func (e *Executor) prepare(ctx context.Context, run store.Run, sink *sink) (*exe
 		installation: ev.InstallationID}
 	if x.maxParallel < 1 {
 		x.maxParallel = 8
+	}
+	// A workflow with `concurrency:` waits here for the run before it in the
+	// same group (or cancels it); the source is fetched after the wait, so a
+	// pull request's merge ref is the freshest one.
+	group, cancelRunning, cerr := concurrencyOf(w, x)
+	if cerr != nil {
+		os.RemoveAll(dir)
+		return nil, cerr
+	}
+	if group != "" {
+		if release, err = e.enterGroup(ctx, run.Repo, group, run.ID, cancelRunning, sink); err != nil {
+			os.RemoveAll(dir)
+			return nil, err
+		}
+		x.release = release
 	}
 	x.sourceTar = filepath.Join(dir, "_source.tar.gz")
 	f, err := os.Create(x.sourceTar)

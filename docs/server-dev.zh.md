@@ -93,6 +93,10 @@ run 会在它所跑的提交上设置 commit status `raccoonci / <workflow 名>`
 - 一次触发会记成一个事件，id 由仓库、文件、cron 条目和分钟组成，所以重启（或两个服务端共用一个库）不会触发两次。服务端停着的时候错过的触发不补；卡顿了几分钟只出一个 run，不会一下子出一串。GitHub 自己在高峰时可能晚点或丢掉定时 run；这里误差在 15 秒的检查间隔以内。
 - 没做：GitHub 对 60 天没有活动的仓库停掉定时任务的规则；没人给它发过事件、又不在 `-allow` 里的仓库发现不了。
 
+## 并发组
+
+workflow 的 `concurrency:`（一个组名，或带 `cancel-in-progress` 的 `group`；表达式可用 `github`、`inputs`、`vars`）按仓库生效，组名不分大小写。一个组里同时只有一个 run 在跑、一个在等：组被占用时到来的 run 要等（日志写 `waiting for run N`），后面又来一个时，在等的那个被取消（`a newer run of the same concurrency group replaced this one`），和 GitHub 一样。`cancel-in-progress` 为真时，组里正在跑的 run 立刻被取消。被取消的等待者会让出位置。源码在等待结束之后才取。限制：只支持 workflow 级的键（job 级的 `concurrency:` 会解析但不生效）；状态在服务进程内存里（单实例，重启后所有 run 重新进组）；等待中的 run 占着 `MaxRuns` 的一个名额；只用假机器测过。
+
 ## 起机限额
 
 InstaBox 限制一个组织每分钟起机的数量（Pro 套餐 10 台），超了回 429。`-starts-per-minute`（默认 10，0 表示自己不计数）让服务端用 62 秒的滑动窗口数自己的起机次数，超了的排队等，所以一阵 run 会被摊开而不是失败；收到 429 后所有起机停 20 秒，被拒的那一次再问（最多约 7 分钟）。日志里会写 `waited … for the machine start limit`。计数只是服务端自己的：同一个 InstaBox 组织里别人起的机器，只能靠 429 才知道。
