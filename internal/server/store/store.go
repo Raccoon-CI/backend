@@ -166,6 +166,10 @@ type APIToken struct {
 	// Repos limits a token of the read role to these repositories (patterns
 	// owner/name or owner/*, lower case); empty means all of them.
 	Repos []string
+	// User and ExpiresAt are set for a session, a token made by signing in with
+	// GitHub: the login it belongs to and when it stops working.
+	User      string
+	ExpiresAt time.Time
 }
 
 // RunFilter selects runs, newest first.
@@ -280,7 +284,13 @@ type Store interface {
 
 	// CreateToken records a token by the SHA-256 (hex) of its value.
 	CreateToken(ctx context.Context, name, role, hash string, repos []string) (APIToken, error)
-	// LookupToken finds a token that has not been revoked and notes its use.
+	// CreateSession makes a token for a user who signed in: it expires, and
+	// repos limits it (nil: all, for an administrator).
+	CreateSession(ctx context.Context, name, user, role, hash string, repos []string, expires time.Time) (APIToken, error)
+	// PurgeExpiredTokens deletes the tokens that expired before the time given
+	// and returns how many.
+	PurgeExpiredTokens(ctx context.Context, before time.Time) (int, error)
+	// LookupToken finds a token that has not been revoked or expired and notes its use.
 	LookupToken(ctx context.Context, hash string) (APIToken, error)
 	ListTokens(ctx context.Context) ([]APIToken, error)
 	// RevokeToken reports whether there was a working token with that id.

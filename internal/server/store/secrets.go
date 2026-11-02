@@ -67,14 +67,17 @@ func (s *SQLite) DeleteSecret(ctx context.Context, scope, name string) (bool, er
 	return n == 1, nil
 }
 
-const tokenColumns = `id, name, role, created_at, last_used_at, revoked_at, repos`
+const tokenColumns = `id, name, role, created_at, last_used_at, revoked_at, repos, user, expires_at`
 
 func scanToken(r scanner) (APIToken, error) {
 	var t APIToken
-	var created, used, revoked int64
+	var created, used, revoked, expires int64
 	var repos string
-	if err := r.Scan(&t.ID, &t.Name, &t.Role, &created, &used, &revoked, &repos); err != nil {
+	if err := r.Scan(&t.ID, &t.Name, &t.Role, &created, &used, &revoked, &repos, &t.User, &expires); err != nil {
 		return APIToken{}, err
+	}
+	if expires != 0 {
+		t.ExpiresAt = fromMS(expires)
 	}
 	if repos != "" {
 		t.Repos = strings.Split(repos, ",")
@@ -96,13 +99,30 @@ func (s *SQLite) CreateToken(ctx context.Context, name, role, hash string, repos
 		name, role, hash, ms(s.Now()), strings.Join(repos, ",")))
 }
 
+// CreateSession implements Store.
+func (s *SQLite) CreateSession(ctx context.Context, name, user, role, hash string, repos []string, expires time.Time) (APIToken, error) {
+	return scanToken(s.db.QueryRowContext(ctx,
+		`INSERT INTO api_tokens (name, role, hash, created_at, repos, user, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING `+tokenColumns,
+		name, role, hash, ms(s.Now()), strings.Join(repos, ","), user, ms(expires)))
+}
+
+// PurgeExpiredTokens implements Store.
+func (s *SQLite) PurgeExpiredTokens(ctx context.Context, before time.Time) (int, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM api_tokens WHERE expires_at != 0 AND expires_at < ?`, ms(before))
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
 // usedEvery is how often a token's last use is written: a busy client should
 // not mean a write per request.
 const usedEvery = time.Minute
 
 // LookupToken implements Store.
 func (s *SQLite) LookupToken(ctx context.Context, hash string) (APIToken, error) {
-	t, err := scanToken(s.db.QueryRowContext(ctx, `SELECT `+tokenColumns+` FROM api_tokens WHERE hash = ? AND revoked_at = 0`, hash))
+	t, err := scanToken(s.db.QueryRowContext(ctx, `SELECT `+tokenColumns+` FROM api_tokens WHERE hash = ? AND revoked_at = 0 AND (expires_at = 0 OR expires_at > ?)`, hash, ms(s.Now())))
 	if errors.Is(err, sql.ErrNoRows) {
 		return APIToken{}, ErrNotFound
 	}

@@ -424,6 +424,67 @@ paths:
             application/json:
               schema: {$ref: "#/components/schemas/Run"}
         "404": {$ref: "#/components/responses/Error"}
+  /v1/auth/github/login:
+    get:
+      summary: Start signing in with GitHub
+      description: |
+        Sends the browser to GitHub (302) and sets a short-lived cookie that ties the sign-in to this browser. `redirect` says where to go afterwards: it must start with one of the addresses the server was given (`-auth-redirect`), and the session then arrives in the URL's fragment (`#token=…&expires_at=…&user=…&role=…`), never the query. Without `redirect` the callback answers with the session as JSON. 503 when signing in is not set up. Needs no token.
+      parameters:
+        - {name: redirect, in: query, required: false, schema: {type: string}}
+      responses:
+        "302": {description: to GitHub}
+        "400": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Error"}
+  /v1/auth/github/callback:
+    get:
+      summary: Where GitHub sends the browser back to
+      description: |
+        Finishes the sign-in: checks the state and the cookie, trades the code for the user's own GitHub token, learns who the user is and which repositories of the App's installations they can reach, revokes that token, and makes a session: a `read` token limited to exactly those repositories that expires after 12 hours (`-auth-session-hours`). A login listed in `-auth-admins` gets an `admin` session instead. Someone who reaches no repository gets 403 and no session. This address must be the App's callback URL. Needs no token.
+      parameters:
+        - {name: code, in: query, schema: {type: string}}
+        - {name: state, in: query, schema: {type: string}}
+      responses:
+        "200":
+          description: the session (when no redirect was asked for)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: {type: string}
+                  user: {type: string}
+                  role: {type: string, enum: [read, admin]}
+                  expires_at: {type: string, format: date-time}
+                  repos: {type: array, items: {type: string}}
+        "302": {description: to the redirect asked for, with the session in the fragment}
+        "400": {$ref: "#/components/responses/Error"}
+        "403": {$ref: "#/components/responses/Error"}
+        "502": {$ref: "#/components/responses/Error"}
+        "503": {$ref: "#/components/responses/Error"}
+  /v1/auth/me:
+    get:
+      summary: Who the token is
+      description: "`kind` is `session` (signed in with GitHub), `api` (made through `/v1/tokens`) or `bootstrap`. A repository-limited token may call this."
+      responses:
+        "200":
+          description: the token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  kind: {type: string, enum: [session, api, bootstrap]}
+                  user: {type: string}
+                  name: {type: string}
+                  role: {type: string, enum: [read, admin]}
+                  repos: {type: array, items: {type: string}}
+                  expires_at: {type: string, format: date-time}
+  /v1/auth/logout:
+    post:
+      summary: End the token it is called with
+      responses:
+        "204": {description: signed out}
+        "400": {$ref: "#/components/responses/Error"}
   /v1/installations:
     get:
       summary: Where the GitHub App is installed

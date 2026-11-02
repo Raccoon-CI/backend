@@ -98,6 +98,17 @@ run 会在它所跑的提交上设置 commit status `raccoonci / <workflow 名>`
 
 workflow 的 `concurrency:`（一个组名，或带 `cancel-in-progress` 的 `group`；表达式可用 `github`、`inputs`、`vars`）按仓库生效，组名不分大小写。一个组里同时只有一个 run 在跑、一个在等：组被占用时到来的 run 要等（日志写 `waiting for run N`），后面又来一个时，在等的那个被取消（`a newer run of the same concurrency group replaced this one`），和 GitHub 一样。`cancel-in-progress` 为真时，组里正在跑的 run 立刻被取消。被取消的等待者会让出位置。源码在等待结束之后才取。job 自己的 `concurrency:` 对这个 job 同样生效（表达式里还能用 `needs`、`strategy`、`matrix`）：进组发生在 job 开始之前，所以在等的 job 还没有 job 记录、check run 和机器（它所在 run 的日志写 `waiting for job deploy of run N`）；新来的 job 顶掉在等的那个；`cancel-in-progress` 取消的是组里的那个 job，不是它的整个 run，那个 job 以 cancelled 结束。同一个 matrix 的 job 在同一个组里轮流跑，每个 matrix 值一个组时一起跑。workflow 级和 job 级同名的组是两个组。限制：状态在服务进程内存里（单实例，重启后所有 run 重新进组）；只用假机器测过。等待并发组的 run 不占执行器的名额（`MaxRuns`），所以同一个组里一串 push 不会挡住别的 run。
 
+## 用 GitHub 登录
+
+给不该持有 API token 的人用（前端、命令行）。用的是 App 自己的用户授权（OAuth），所以 App 的**回调地址**要设成 `https://<public-url>/v1/auth/github/callback`（见 [github-app.zh.md](github-app.zh.md)），启动时要有：`-github-client-id`（App 的 client id，环境变量 `RACCOONCI_GITHUB_CLIENT_ID`）、`RACCOONCI_GITHUB_CLIENT_SECRET` 或 `_FILE`，以及 https 的 `-public-url`。可选：`-auth-admins 登录名,登录名`、`-auth-redirect https://app.example.com/`（可重复）、`-auth-session-hours`（默认 12）。
+
+- `GET /v1/auth/github/login[?redirect=URL]` 把浏览器送去 GitHub；state 带签名，并用一个短命的 cookie（HttpOnly、Secure、SameSite=Lax）绑定到这个浏览器，所以别人发起的链接没法在你的浏览器里完成。`redirect` 必须以某个 `-auth-redirect` 地址开头，否则 400。
+- `GET /v1/auth/github/callback`（GitHub 把浏览器送回这里）用 code 换用户自己的 GitHub token，问出他是谁、能访问 App 安装的哪些仓库，然后**吊销这个 token**，再做一个**会话**：一个正好限定到这些仓库的 `read` token（限制和被限定的 API token 一样，见"密钥"一节），到会话时长就过期。回答是 `{token, user, role, expires_at, repos}`；带了 `redirect` 就把浏览器送过去，同样的内容放在 URL 的**片段**里（绝不放查询串，那会进日志）。一个仓库也访问不到的人得 403，不产生会话。
+- 只有在 `-auth-admins` 里的登录名才有 `admin`（不受限）。是 GitHub 组织的 owner 在这里不代表任何东西。
+- `GET /v1/auth/me` 说明一个 token 是谁（`session`、`api` 或 `bootstrap`，它的角色、仓库、过期时间）；`POST /v1/auth/logout` 结束调用它的那个 token。两个对被限定的 token 也可用。过期超过一天的会话会被删掉。
+- 会话能看到什么在创建时就定了：之后才被授权的仓库需要重新登录。
+- 已测：用假 GitHub 走完整个流程、各种拒绝情形和吊销；经隧道测了第一步（跳转到 GitHub、cookie、两个 400）。**还没有人在浏览器里真走过一遍**：那需要先在 App 上登记回调地址。
+
 ## App 装在哪里
 
 用 GitHub App 时，服务端保存一张它的安装表（账号、全部仓库还是选定仓库、是否挂起）：启动时和之后每小时从 GitHub 读（`GET /app/installations` 和每个安装的仓库），并由 App 的 `installation` 和 `installation_repositories` 投递随时更新——GitHub 对每个 App 都会发这两种，不用订阅，也不要求仓库在 `-allow` 里（只记录，不跑）。手动启动或重跑的 run 找 installation 时先查这张表，再看存下的事件，最后才问 GitHub。`GET /v1/installations` 显示这张表（限定了仓库的 token 看不了）。限制：重新投递一个旧的 `installation` 事件会把仓库列表退回当时的样子，直到下一个事件或每小时的读取；这两种事件还没见过 GitHub 自己发的（启动时的读取见过：开发 App 在 8 个仓库上）。

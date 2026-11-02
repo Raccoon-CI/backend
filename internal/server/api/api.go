@@ -46,6 +46,9 @@ type API struct {
 	// Artifacts lists and links a run's artifacts; nil switches those routes
 	// off (503).
 	Artifacts ArtifactStore
+	// Auth signs people in with GitHub (auth.Service); nil switches the sign-in
+	// routes off (503).
+	Auth SignIn
 	// Token is the bootstrap token: it has the admin role and is how the
 	// first tokens are made. Tokens made through the API live in Store. With
 	// neither, the API is closed (503).
@@ -108,6 +111,10 @@ func (a *API) routes() []route {
 		{"GET /v1/runs/{id}/artifacts/{artifact}/download", a.downloadArtifact, read},
 		{"GET /v1/events/{id}", a.getEvent, read},
 		{"GET /v1/installations", a.listInstallations, read},
+		{"GET /v1/auth/github/login", a.authLogin, open},
+		{"GET /v1/auth/github/callback", a.authCallback, open},
+		{"GET /v1/auth/me", a.authMe, read},
+		{"POST /v1/auth/logout", a.authLogout, read},
 		{"GET /v1/secrets", a.listSecrets(store.KindSecret), admin},
 		{"PUT /v1/secrets", a.putSecret(store.KindSecret), admin},
 		{"DELETE /v1/secrets", a.deleteSecret(store.KindSecret), admin},
@@ -160,22 +167,31 @@ func HashToken(token string) string {
 // to some repositories, which: the bootstrap token is admin (compared by hash,
 // so it takes the same time whatever the guess), others are looked up by hash
 // among the tokens kept. A role of "" means none.
-func (a *API) principalOf(ctx context.Context, given string) (role string, repos []string) {
+func (a *API) principalOf(ctx context.Context, given string) (role string, repos []string, tok store.APIToken) {
 	if given == "" {
-		return "", nil
+		return "", nil, store.APIToken{}
 	}
 	if a.Token != "" {
 		want, have := sha256.Sum256([]byte(a.Token)), sha256.Sum256([]byte(given))
 		if subtle.ConstantTimeCompare(want[:], have[:]) == 1 {
-			return store.RoleAdmin, nil
+			return store.RoleAdmin, nil, store.APIToken{} // the bootstrap token: no stored row
 		}
 	}
 	if a.Store != nil {
 		if t, err := a.Store.LookupToken(ctx, HashToken(given)); err == nil {
-			return t.Role, t.Repos
+			return t.Role, t.Repos, t
 		}
 	}
-	return "", nil
+	return "", nil, store.APIToken{}
+}
+
+// whoKey carries the stored token a request was made with (zero for the
+// bootstrap token) to the handlers that need it.
+type whoKey struct{}
+
+func whoOf(ctx context.Context) store.APIToken {
+	t, _ := ctx.Value(whoKey{}).(store.APIToken)
+	return t
 }
 
 // scopeKey carries a limited token's repository patterns to the handlers.
@@ -192,6 +208,9 @@ func scopeOf(ctx context.Context) []string {
 // another repository, and refuses every route this list does not know, so a
 // route added later is closed to limited tokens until someone decides.
 func (a *API) inScope(w http.ResponseWriter, r *http.Request, repos []string) bool {
+	if r.Pattern == "GET /v1/auth/me" || r.Pattern == "POST /v1/auth/logout" {
+		return true // a session may ask who it is and end itself
+	}
 	pattern := strings.TrimPrefix(r.Pattern, "GET ")
 	switch {
 	case pattern == "/v1/runs":
@@ -242,7 +261,8 @@ func (a *API) auth(need access, next http.HandlerFunc) http.HandlerFunc {
 		if !ok {
 			given = "" // a token without the scheme is not accepted
 		}
-		role, repos := a.principalOf(r.Context(), given)
+		role, repos, tok := a.principalOf(r.Context(), given)
+		r = r.WithContext(context.WithValue(r.Context(), whoKey{}, tok))
 		switch {
 		case role == "":
 			w.Header().Set("WWW-Authenticate", "Bearer")

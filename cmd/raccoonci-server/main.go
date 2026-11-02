@@ -25,6 +25,7 @@ import (
 	"raccoonci/internal/runnerimages"
 	"raccoonci/internal/server/api"
 	"raccoonci/internal/server/artifacts"
+	"raccoonci/internal/server/auth"
 	"raccoonci/internal/server/caches"
 	"raccoonci/internal/server/config"
 	"raccoonci/internal/server/execute"
@@ -114,6 +115,11 @@ func run(args []string) error {
 	cacheLimitGB := fs.Int("cache-limit-gb", 5, "how much one cache space (the default branch, or one other ref) may hold, in GB; the least recently used go first")
 	startsPerMinute := fs.Int("starts-per-minute", 10, "how many InstaBox machines may be started a minute (the organization's limit; 10 on the Pro plan): more wait their turn; 0 = no limit of our own (a refusal from InstaBox is still waited out)")
 	schedules := fs.Bool("schedule", true, "fire the runs of `on: schedule:` workflows (on the default branch) for the repositories the server knows; -schedule=false leaves it to GitHub")
+	clientID := fs.String("github-client-id", os.Getenv("RACCOONCI_GITHUB_CLIENT_ID"), "the GitHub App's client id, to let people sign in with GitHub (env RACCOONCI_GITHUB_CLIENT_ID; its secret is RACCOONCI_GITHUB_CLIENT_SECRET or _FILE); the App's callback URL must be <public-url>/v1/auth/github/callback")
+	authAdmins := fs.String("auth-admins", "", "GitHub logins (comma-separated) that get the admin role when they sign in; everyone else gets a read session limited to the repositories they can reach")
+	authHours := fs.Float64("auth-session-hours", 12, "how long a session made by signing in lasts, in hours")
+	var authRedirects listFlag
+	fs.Var(&authRedirects, "auth-redirect", "an address (prefix) a sign-in may send the browser to afterwards, with the session in the URL's fragment: the frontend's (repeatable; https, or http on localhost)")
 	var allow listFlag
 	fs.Var(&allow, "allow", "a repository the server works for, owner/name or owner/* (repeatable; at least one)")
 	fs.Usage = func() {
@@ -181,6 +187,28 @@ Secrets are read from the environment, or from the file named by NAME_FILE (mode
 	mux := http.NewServeMux()
 	mux.Handle("/webhooks/github", hook)
 	apiSvc := &api.API{Store: st, Dispatcher: hook, Token: apiToken, Version: version}
+	if *clientID != "" {
+		clientSecret, err := config.Secret("RACCOONCI_GITHUB_CLIENT_SECRET")
+		if err != nil {
+			return err
+		}
+		if clientSecret == "" {
+			return errors.New("-github-client-id is given but RACCOONCI_GITHUB_CLIENT_SECRET (or _FILE) is not")
+		}
+		var admins []string
+		for _, a := range strings.Split(*authAdmins, ",") {
+			if a = strings.TrimSpace(a); a != "" {
+				admins = append(admins, a)
+			}
+		}
+		signIn, err := auth.New(auth.Config{ClientID: *clientID, ClientSecret: clientSecret, PublicURL: *publicURL, Admins: admins,
+			Redirects: authRedirects, TTL: time.Duration(*authHours * float64(time.Hour)), Sessions: st, Log: log})
+		if err != nil {
+			return fmt.Errorf("signing in with GitHub: %w (it needs an https -public-url)", err)
+		}
+		apiSvc.Auth = signIn
+		log.Info("signing in with GitHub is on", "callback", signIn.CallbackURL(), "admins", len(admins))
+	}
 	mux.Handle("/", apiSvc.Handler())
 	// Secrets need a master key; without one they are off (the routes answer
 	// 503 and no run gets a secret), and nothing is ever stored in the clear.

@@ -14,7 +14,9 @@ GitHub → your avatar → **Settings** → **Developer settings** → **GitHub 
 |---|---|
 | GitHub App name | anything unique on GitHub, e.g. `Raccoon CI (example App)` (the name is public) |
 | Homepage URL | required; any address, e.g. the organization's page |
-| Callback URL, "Request user authorization (OAuth) during installation" | leave empty / off. Signing in with GitHub is not built yet |
+| Callback URL | `https://<the server's public address>/v1/auth/github/callback`, to let people sign in with GitHub (see [server-dev.md](server-dev.md), "Signing in with GitHub"). Without it the server runs fine; only signing in is off |
+| "Request user authorization (OAuth) during installation" | off (signing in is started from the server, not from the installation) |
+| "Expire user authorization tokens" | on (the server revokes the user's token right after signing them in anyway) |
 | Webhook → **Active** | on |
 | Webhook URL | `https://<the server's public address>/webhooks/github` |
 | Webhook secret | the same string as the server's `RACCOONCI_WEBHOOK_SECRET`, see below |

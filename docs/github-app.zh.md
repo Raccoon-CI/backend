@@ -14,7 +14,9 @@ GitHub → 右上角头像 → **Settings** → **Developer settings** → **Git
 |---|---|
 | GitHub App name | GitHub 上唯一的名字，例如 `Raccoon CI (example App)`（名字是公开的） |
 | Homepage URL | 必填，随便一个地址，例如组织主页 |
-| Callback URL、"Request user authorization (OAuth) during installation" | 留空 / 不勾。还没做 GitHub 登录 |
+| Callback URL | `https://<服务端的公网地址>/v1/auth/github/callback`，用来让人用 GitHub 登录（见 [server-dev.zh.md](server-dev.zh.md) 的"用 GitHub 登录"）。不填服务端照常工作，只是不能登录 |
+| "Request user authorization (OAuth) during installation" | 不勾（登录由服务端发起，不是从安装流程里发起） |
+| "Expire user authorization tokens" | 勾上（服务端在用户登录完成后本来就会立刻吊销用户的 token） |
 | Webhook → **Active** | 勾上 |
 | Webhook URL | `https://<服务端的公网地址>/webhooks/github` |
 | Webhook secret | 和服务端的 `RACCOONCI_WEBHOOK_SECRET` 是同一串，见下面 |

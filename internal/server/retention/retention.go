@@ -62,6 +62,12 @@ func (j *Janitor) Run(ctx context.Context, interval time.Duration) {
 		interval = time.Hour
 	}
 	sweep := func() {
+		// Sessions that expired more than a day ago are of no use to anyone.
+		if n, err := j.Store.PurgeExpiredTokens(ctx, time.Now().Add(-24*time.Hour)); err != nil && ctx.Err() == nil {
+			j.log().Warn("deleting expired sessions failed", "err", err)
+		} else if n > 0 {
+			j.log().Info("expired sessions deleted", "sessions", n)
+		}
 		runs, lines, err := j.Sweep(ctx, time.Now())
 		if err != nil && ctx.Err() == nil {
 			j.log().Warn("deleting old logs failed", "runs", runs, "lines", lines, "err", err)

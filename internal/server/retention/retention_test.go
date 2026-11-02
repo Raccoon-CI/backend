@@ -9,6 +9,41 @@ import (
 	"raccoonci/internal/server/store"
 )
 
+func TestTheJanitorDeletesSessionsExpiredForADayAndNothingElse(t *testing.T) {
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "server.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	now := time.Now()
+	st.CreateSession(ctx, "gone", "a", store.RoleRead, "h1", nil, now.Add(-48*time.Hour))
+	st.CreateSession(ctx, "just expired", "b", store.RoleRead, "h2", nil, now.Add(-time.Hour))
+	st.CreateSession(ctx, "alive", "c", store.RoleRead, "h3", nil, now.Add(time.Hour))
+	st.CreateToken(ctx, "api", store.RoleAdmin, "h4", nil)
+	done := make(chan struct{})
+	go func() { defer close(done); (&Janitor{Store: st}).Run(ctx, time.Hour) }()
+	deadline := time.Now().Add(5 * time.Second)
+	var names []string
+	for time.Now().Before(deadline) {
+		names = names[:0]
+		all, _ := st.ListTokens(ctx)
+		for _, t := range all {
+			names = append(names, t.Name)
+		}
+		if len(names) == 3 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	if len(names) != 3 || names[0] == "gone" || names[1] == "gone" || names[2] == "gone" {
+		t.Fatalf("tokens left: %v; only the one expired for more than a day should go", names)
+	}
+}
+
 func TestSweepDeletesOnlyLogsPastTheirTimeAndKeepsEverythingElse(t *testing.T) {
 	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "server.db"))
 	if err != nil {
