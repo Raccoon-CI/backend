@@ -190,6 +190,25 @@ func TestSourceTarFollowsGitHubsRedirectAndRepacks(t *testing.T) {
 	_ = codeloadAuth
 }
 
+func TestSourceTarAsksForARefWithItsSlashesIntact(t *testing.T) {
+	var got string
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.URL.EscapedPath()
+		w.Write(makeTarGz(t, []entry{{name: "x/f", body: "1"}}))
+	}))
+	defer api.Close()
+	c := &Client{Base: api.URL, Tokens: StaticToken("tok")}
+	if err := c.SourceTar(context.Background(), 0, "acme/web", "refs/pull/7/merge", io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if got != "/repos/acme/web/tarball/refs/pull/7/merge" {
+		t.Fatalf("path = %q", got)
+	}
+	if escapeRef("a b/c") != "a%20b/c" {
+		t.Fatalf("escapeRef = %q", escapeRef("a b/c"))
+	}
+}
+
 func TestSourceTarNotFound(t *testing.T) {
 	api := httptest.NewServer(http.NotFoundHandler())
 	defer api.Close()

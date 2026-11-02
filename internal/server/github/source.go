@@ -37,7 +37,7 @@ func (c *Client) SourceTar(ctx context.Context, installationID int64, repo, sha 
 	if base == "" {
 		base = "https://api.github.com"
 	}
-	req, err := http.NewRequestWithContext(ctx, "GET", base+"/repos/"+repo+"/tarball/"+url.PathEscape(sha), nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", base+"/repos/"+repo+"/tarball/"+escapeRef(sha), nil)
 	if err != nil {
 		return err
 	}
@@ -62,6 +62,16 @@ func (c *Client) SourceTar(ctx context.Context, installationID int64, repo, sha 
 		return fmt.Errorf("github tarball of %s at %s: %s: %s", repo, sha, resp.Status, strings.TrimSpace(string(body)))
 	}
 	return Repack(w, resp.Body, maxSource)
+}
+
+// escapeRef escapes each part of a ref such as refs/pull/5/merge, keeping the
+// slashes (a commit id has none, so it is escaped as before).
+func escapeRef(ref string) string {
+	parts := strings.Split(ref, "/")
+	for i, p := range parts {
+		parts[i] = url.PathEscape(p)
+	}
+	return strings.Join(parts, "/")
 }
 
 // Repack copies a GitHub source archive (.tar.gz) to w with its top directory

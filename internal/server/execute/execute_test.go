@@ -100,6 +100,8 @@ type fakeSource struct {
 	got   []string
 	err   error
 	bytes string
+	// missing makes a ref answer "not found" that many times (negative: always).
+	missing map[string]int
 }
 
 func (s *fakeSource) SourceTar(_ context.Context, inst int64, repo, sha string, w io.Writer) error {
@@ -109,7 +111,21 @@ func (s *fakeSource) SourceTar(_ context.Context, inst int64, repo, sha string, 
 	if s.err != nil {
 		return s.err
 	}
-	_, err := io.WriteString(w, s.bytes)
+	s.mu.Lock()
+	if n := s.missing[sha]; n != 0 {
+		if n > 0 {
+			s.missing[sha] = n - 1
+		}
+		s.mu.Unlock()
+		io.WriteString(w, "PARTIAL") // a failed try may leave something behind
+		return github.ErrNotFound
+	}
+	s.mu.Unlock()
+	out := s.bytes
+	if strings.HasPrefix(sha, "refs/") {
+		out += "@" + sha // a test can tell which ref the machine was given
+	}
+	_, err := io.WriteString(w, out)
 	return err
 }
 
@@ -247,6 +263,65 @@ func TestARunIsPlannedWithTheImagesTheServerPolledAndSurvivesAnUnreadableOne(t *
 	}
 	if asked != 2 {
 		t.Fatalf("Images was asked %d times, want once per run", asked)
+	}
+}
+
+func prRun(r *store.Run) { r.Event = "pull_request"; r.PullRequest = 7 }
+
+func TestAPullRequestRunsOnItsMergeRefOnceGitHubHasMadeIt(t *testing.T) {
+	e := newEnv(t)
+	e.ex.MergeWait = time.Millisecond
+	e.src.missing = map[string]int{"refs/pull/7/merge": 2} // 404 right after the event
+	run := e.queue(t, "pr", twoJobs, prRun)
+	e.start(t)
+	if done := e.wait(t, run.ID); done.Conclusion != "success" {
+		t.Fatalf("conclusion %q", done.Conclusion)
+	}
+	e.m.mu.Lock()
+	defer e.m.mu.Unlock()
+	if string(e.m.calls[0].source) != "TARBALL@refs/pull/7/merge" {
+		t.Fatalf("the machine got %q (a failed try must not leave bytes behind)", e.m.calls[0].source)
+	}
+}
+
+func TestAPullRequestWithoutAMergeRefRunsItsHeadAndSaysSo(t *testing.T) {
+	e := newEnv(t)
+	e.ex.MergeWait = time.Millisecond
+	e.ex.MergeTries = 3
+	e.src.missing = map[string]int{"refs/pull/7/merge": -1} // conflicts: never made
+	run := e.queue(t, "pr", twoJobs, prRun)
+	e.start(t)
+	if done := e.wait(t, run.ID); done.Conclusion != "success" {
+		t.Fatalf("conclusion %q", done.Conclusion)
+	}
+	e.m.mu.Lock()
+	if string(e.m.calls[0].source) != "TARBALL" {
+		t.Fatalf("the machine got %q, want the head's source", e.m.calls[0].source)
+	}
+	e.m.mu.Unlock()
+	var warned bool
+	for _, ev := range e.log(t, run.ID) {
+		warned = warned || strings.Contains(ev.Text, "merge of this pull request could not be fetched")
+	}
+	if !warned {
+		t.Fatalf("no warning in the log: %+v", e.log(t, run.ID))
+	}
+	e.src.mu.Lock()
+	defer e.src.mu.Unlock()
+	if n := len(e.src.got); n != 4 { // 3 tries at the merge ref, then the head
+		t.Fatalf("source asked %d times: %v", n, e.src.got)
+	}
+}
+
+func TestAPushIsNeverGivenAMergeRef(t *testing.T) {
+	e := newEnv(t)
+	run := e.queue(t, "push", twoJobs, nil)
+	e.start(t)
+	e.wait(t, run.ID)
+	e.src.mu.Lock()
+	defer e.src.mu.Unlock()
+	if len(e.src.got) != 1 || strings.Contains(e.src.got[0], "refs/") {
+		t.Fatalf("source asked for %v", e.src.got)
 	}
 }
 

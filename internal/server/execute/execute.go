@@ -129,6 +129,10 @@ type Executor struct {
 	// work directory's disk has less than this available (0 = no check).
 	MinFreeBytes int64
 	Free         func() (int64, error)
+	// MergeTries and MergeWait say how often and how far apart the merge ref of
+	// a pull request is asked for while GitHub is still making it (default 4, 2 s).
+	MergeTries int
+	MergeWait  time.Duration
 	// Images, if set, gives the runner-images snapshot a run is planned with
 	// (default: the one compiled in).
 	Images func(ctx context.Context) (*runnerimages.Snapshot, error)
@@ -483,15 +487,75 @@ func (e *Executor) prepare(ctx context.Context, run store.Run, sink *sink) (*exe
 	if maxSource <= 0 {
 		maxSource = defaultMaxSource
 	}
-	err = e.Source.SourceTar(ctx, ev.InstallationID, run.Repo, run.SHA, &cappedWriter{w: f, max: maxSource})
+	what := run.SHA
+	err = nil
+	if run.Event == "pull_request" && run.PullRequest > 0 {
+		// GitHub runs a pull request on the merge of its head into the base;
+		// that ref appears a moment after the event, and does not exist when the
+		// two conflict. Try it a few times, then run the head and say so.
+		ref := fmt.Sprintf("refs/pull/%d/merge", run.PullRequest)
+		err = e.fetchSource(ctx, f, ev.InstallationID, run.Repo, ref, maxSource, e.mergeTries(), e.mergeWait())
+		if err == nil {
+			what = ref
+		} else if ctx.Err() == nil {
+			sink.Add(runner.Event{Kind: runner.Warning, Time: time.Now(),
+				Text: fmt.Sprintf("the merge of this pull request could not be fetched (%v): running its head commit %s instead", err, run.SHA[:min(7, len(run.SHA))])})
+			err = nil
+		}
+	}
+	if what == run.SHA && err == nil {
+		err = e.fetchSource(ctx, f, ev.InstallationID, run.Repo, run.SHA, maxSource, 1, 0)
+	}
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
 	if err != nil {
 		os.RemoveAll(dir)
-		return nil, fmt.Errorf("fetching %s at %s: %w", run.Repo, run.SHA, err)
+		return nil, fmt.Errorf("fetching %s at %s: %w", run.Repo, what, err)
 	}
 	return x, nil
+}
+
+func (e *Executor) mergeTries() int {
+	if e.MergeTries < 1 {
+		return 4
+	}
+	return e.MergeTries
+}
+
+func (e *Executor) mergeWait() time.Duration {
+	if e.MergeWait <= 0 {
+		return 2 * time.Second
+	}
+	return e.MergeWait
+}
+
+// fetchSource writes the source of ref to f, trying up to tries times while
+// GitHub answers "not found" (a ref that is still being made), wait apart.
+// Anything else, or the size limit, ends it at once. The file is emptied
+// before each try.
+func (e *Executor) fetchSource(ctx context.Context, f *os.File, installation int64, repo, ref string, max int64, tries int, wait time.Duration) error {
+	var err error
+	for i := 0; i < tries; i++ {
+		if i > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(wait):
+			}
+		}
+		if err = f.Truncate(0); err != nil {
+			return err
+		}
+		if _, err = f.Seek(0, io.SeekStart); err != nil {
+			return err
+		}
+		err = e.Source.SourceTar(ctx, installation, repo, ref, &cappedWriter{w: f, max: max})
+		if err == nil || !errors.Is(err, github.ErrNotFound) {
+			return err
+		}
+	}
+	return err
 }
 
 func parseObject(s string) (value.Object, error) {
