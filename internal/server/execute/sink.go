@@ -9,24 +9,24 @@ import (
 
 	"raccoonci/internal/dispatch"
 	"raccoonci/internal/instabox"
-	"raccoonci/internal/runner"
+	"raccoonci/internal/runevent"
 	"raccoonci/internal/server/store"
 )
 
-// kindNames are what the log says for runner.EventKind, which is a number in
+// kindNames are what the log says for runevent.EventKind, which is a number in
 // Go: a reader of the API should not need the Go constants.
-var kindNames = map[runner.EventKind]string{
-	runner.JobStarted:   "job_started",
-	runner.StepStarted:  "step_started",
-	runner.Output:       "output",
-	runner.Debug:        "debug",
-	runner.Notice:       "notice",
-	runner.Warning:      "warning",
-	runner.Error:        "error",
-	runner.GroupStart:   "group_start",
-	runner.GroupEnd:     "group_end",
-	runner.StepFinished: "step_finished",
-	runner.JobFinished:  "job_finished",
+var kindNames = map[runevent.EventKind]string{
+	runevent.JobStarted:   "job_started",
+	runevent.StepStarted:  "step_started",
+	runevent.Output:       "output",
+	runevent.Debug:        "debug",
+	runevent.Notice:       "notice",
+	runevent.Warning:      "warning",
+	runevent.Error:        "error",
+	runevent.GroupStart:   "group_start",
+	runevent.GroupEnd:     "group_end",
+	runevent.StepFinished: "step_finished",
+	runevent.JobFinished:  "job_finished",
 }
 
 // logEvent is a log line as stored and served.
@@ -41,8 +41,8 @@ type logEvent struct {
 	Conclusion string            `json:"conclusion,omitempty"`
 }
 
-// EncodeEvent is how a runner.Event is stored in a run's log.
-func EncodeEvent(e runner.Event) string {
+// EncodeEvent is how a runevent.Event is stored in a run's log.
+func EncodeEvent(e runevent.Event) string {
 	kind, ok := kindNames[e.Kind]
 	if !ok {
 		kind = "unknown"
@@ -94,7 +94,7 @@ func newSink(st store.Store, run int64, log *slog.Logger) *sink {
 }
 
 // Add queues an event.
-func (s *sink) Add(e runner.Event) {
+func (s *sink) Add(e runevent.Event) {
 	line := store.LogLine{At: e.Time, Data: EncodeEvent(e)}
 	s.mu.Lock()
 	s.buf = append(s.buf, line)

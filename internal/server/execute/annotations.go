@@ -5,7 +5,7 @@ import (
 	"strings"
 	"sync"
 
-	"raccoonci/internal/runner"
+	"raccoonci/internal/runevent"
 	"raccoonci/internal/server/github"
 )
 
@@ -17,14 +17,14 @@ const noFilePath = ".github"
 // warnings and errors a step printed (`::error file=x,line=3::msg`) or the
 // runner reported. The file and line are the command's own; without them the
 // annotation is attached to the commit's .github path, line 1, like GitHub's.
-func annotationOf(e runner.Event) (github.Annotation, bool) {
+func annotationOf(e runevent.Event) (github.Annotation, bool) {
 	var level string
 	switch e.Kind {
-	case runner.Notice:
+	case runevent.Notice:
 		level = github.LevelNotice
-	case runner.Warning:
+	case runevent.Warning:
 		level = github.LevelWarning
-	case runner.Error:
+	case runevent.Error:
 		level = github.LevelFailure
 	default:
 		return github.Annotation{}, false
@@ -54,7 +54,7 @@ type annotations struct {
 	dropped int
 }
 
-func (c *annotations) add(e runner.Event) {
+func (c *annotations) add(e runevent.Event) {
 	a, ok := annotationOf(e)
 	if !ok {
 		return

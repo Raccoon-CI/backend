@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"raccoonci/internal/dispatch"
-	"raccoonci/internal/runner"
+	"raccoonci/internal/runevent"
 	"raccoonci/internal/runnerimages"
 	"raccoonci/internal/server/github"
 	"raccoonci/internal/server/secrets"
@@ -88,10 +88,10 @@ func (m *fakeMachine) Run(ctx context.Context, name string, job dispatch.Job) (d
 
 func succeed(c call, out *wire.Encoder) (dispatch.Result, error) {
 	now := time.Now()
-	out.Write(wire.Line{Event: &runner.Event{Kind: runner.JobStarted, Time: now, Job: c.spec.Job}})
-	out.Write(wire.Line{Event: &runner.Event{Kind: runner.Output, Time: now, Job: c.spec.Job, Step: "Run echo", Text: "hello from " + c.spec.Job}})
-	out.Write(wire.Line{Event: &runner.Event{Kind: runner.JobFinished, Time: now, Job: c.spec.Job, Conclusion: runner.Success}})
-	out.Write(wire.Line{Result: &wire.Result{Conclusion: runner.Success, Outputs: json.RawMessage(`{"v":"1"}`), DurationMS: 5}})
+	out.Write(wire.Line{Event: &runevent.Event{Kind: runevent.JobStarted, Time: now, Job: c.spec.Job}})
+	out.Write(wire.Line{Event: &runevent.Event{Kind: runevent.Output, Time: now, Job: c.spec.Job, Step: "Run echo", Text: "hello from " + c.spec.Job}})
+	out.Write(wire.Line{Event: &runevent.Event{Kind: runevent.JobFinished, Time: now, Job: c.spec.Job, Conclusion: runevent.Success}})
+	out.Write(wire.Line{Result: &wire.Result{Conclusion: runevent.Success, Outputs: json.RawMessage(`{"v":"1"}`), DurationMS: 5}})
 	return dispatch.Result{}, nil
 }
 
@@ -458,8 +458,8 @@ func TestARunIsFetchedSentToMachinesAndLogged(t *testing.T) {
 func TestAFailingJobFailsTheRunAndStopsWhatNeedsIt(t *testing.T) {
 	e := newEnv(t)
 	e.m.handle = func(c call, out *wire.Encoder) (dispatch.Result, error) {
-		out.Write(wire.Line{Event: &runner.Event{Kind: runner.Error, Time: time.Now(), Job: c.spec.Job, Text: "boom"}})
-		out.Write(wire.Line{Result: &wire.Result{Conclusion: runner.Failure, Outputs: json.RawMessage(`{}`)}})
+		out.Write(wire.Line{Event: &runevent.Event{Kind: runevent.Error, Time: time.Now(), Job: c.spec.Job, Text: "boom"}})
+		out.Write(wire.Line{Result: &wire.Result{Conclusion: runevent.Failure, Outputs: json.RawMessage(`{}`)}})
 		return dispatch.Result{ExitCode: 0}, nil
 	}
 	run := e.queue(t, "d", twoJobs, nil)
@@ -720,9 +720,9 @@ func TestEachJobGetsACheckRunCompletedWithItsConclusion(t *testing.T) {
 	checks := &fakeChecks{}
 	e.ex.Checks = checks
 	e.m.handle = func(c call, out *wire.Encoder) (dispatch.Result, error) {
-		conclusion := runner.Success
+		conclusion := runevent.Success
 		if c.spec.Job == "test" {
-			conclusion = runner.Failure
+			conclusion = runevent.Failure
 		}
 		out.Write(wire.Line{Result: &wire.Result{Conclusion: conclusion, Outputs: json.RawMessage(`{}`)}})
 		return dispatch.Result{}, nil
@@ -790,7 +790,7 @@ func TestAFailedRunIsReportedFailedAndGitHubErrorsDoNotFailRuns(t *testing.T) {
 	rep := &fakeReporter{err: errors.New("github is down")}
 	e.ex.Reporter = rep
 	e.m.handle = func(c call, out *wire.Encoder) (dispatch.Result, error) {
-		out.Write(wire.Line{Result: &wire.Result{Conclusion: runner.Failure, Outputs: json.RawMessage(`{}`)}})
+		out.Write(wire.Line{Result: &wire.Result{Conclusion: runevent.Failure, Outputs: json.RawMessage(`{}`)}})
 		return dispatch.Result{}, nil
 	}
 	run := e.queue(t, "d", twoJobs, nil)
@@ -968,7 +968,7 @@ func TestGithubContext(t *testing.T) {
 
 func TestEncodeEventUsesNamesNotNumbers(t *testing.T) {
 	var ev logEvent
-	if err := json.Unmarshal([]byte(EncodeEvent(runner.Event{Kind: runner.StepFinished, Job: "j", Step: "s", Conclusion: runner.Success})), &ev); err != nil {
+	if err := json.Unmarshal([]byte(EncodeEvent(runevent.Event{Kind: runevent.StepFinished, Job: "j", Step: "s", Conclusion: runevent.Success})), &ev); err != nil {
 		t.Fatal(err)
 	}
 	if ev.Kind != "step_finished" || ev.Job != "j" || ev.Conclusion != "success" || ev.Time.IsZero() {
