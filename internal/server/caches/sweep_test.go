@@ -137,6 +137,21 @@ func TestARepositoryIsKeptUnderItsCapAcrossItsSpaces(t *testing.T) {
 	}
 }
 
+func TestStartRemovesTheChunksOfUploadsThatNeverFinished(t *testing.T) {
+	h := newHarness(t)
+	orphan := filepath.Join(h.dir, "cache-spool", "raccoonci-cache-spool-9", "chunk")
+	if err := os.MkdirAll(filepath.Dir(orphan), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(orphan, []byte("half"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h.start() // the next start on the same directory
+	if h.exists(orphan) {
+		t.Fatal("the spool of a dead server is still there")
+	}
+}
+
 func TestTheOrganizationIsWrittenDownForTheSweep(t *testing.T) {
 	h := newHarness(t)
 	h.run(1, "Acme/web", "refs/heads/main")

@@ -118,7 +118,7 @@ GET /v1/runs/{id}/artifacts/{artifact}/download   # 302 到一个一小时内有
 
 ## 重启
 
-服务停止时正在进行的 run 会**从头重新开始**，不是接着跑：收到 SIGTERM 时每个进行中的 run 被取消（机器删掉，要几秒），然后回到队列；崩溃的话，下次启动时把还在进行中的 run 放回队列。run 的日志里会有一条警告（"the server stopped while this ran; it is started again … attempt N"），前一次尝试的日志行保留，这期间 GitHub 上的状态一直是 `pending`。一个 run 最多被取走 3 次，之后记为失败。被人取消的 run 仍是已取消。崩溃之后旧一次尝试的机器已经不知道是哪些，由 InstaBox 在 2 小时期限到时删掉。
+服务停止时正在进行的 run 会**从头重新开始**，不是接着跑：收到 SIGTERM 时每个进行中的 run 被取消（机器删掉，要几秒），然后回到队列；崩溃的话，下次启动时把还在进行中的 run 放回队列。run 的日志里会有一条警告（"the server stopped while this ran; it is started again … attempt N"），前一次尝试的日志行保留，这期间 GitHub 上的状态一直是 `pending`。每次启动时，在取任何 run 之前，服务还会删掉死掉的 run 留在磁盘上的东西：工作目录（`work/`）、本机 runner 的 job 目录（`jobs/`），以及没收完的上传分块（`artifacts/spool`、`caches/cache-spool`）。这假定一个数据目录只有一个服务在用。一个 run 最多被取走 3 次，之后记为失败。被人取消的 run 仍是已取消。崩溃之后旧一次尝试的机器已经不知道是哪些，由 InstaBox 在 2 小时期限到时删掉。
 
 ## 缓存，以及对象放在哪里
 

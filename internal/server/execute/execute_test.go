@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -367,6 +368,40 @@ func TestRunsLeftInProgressByAStoppedServerAreRunAgain(t *testing.T) {
 	}
 	if !said {
 		t.Fatal("the log must say the run was started again")
+	}
+}
+
+func TestStartRemovesWhatARunThatDiedLeftInTheWorkDirectories(t *testing.T) {
+	e := newEnv(t)
+	local := t.TempDir()
+	e.ex.Machine = Local{Binary: "/bin/true", Dir: local}
+	for _, p := range []string{filepath.Join(e.ex.WorkDir, "run-7", "_source.tar.gz"), filepath.Join(local, "rc-r7-1-123", "src", "f")} {
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.start(t)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		a, _ := os.ReadDir(e.ex.WorkDir)
+		b, _ := os.ReadDir(local)
+		if len(a) == 0 && len(b) == 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if a, _ := os.ReadDir(e.ex.WorkDir); len(a) != 0 {
+		t.Fatalf("work directory still holds %v", a)
+	}
+	if b, _ := os.ReadDir(local); len(b) != 0 {
+		t.Fatalf("the local runner's directory still holds %v", b)
+	}
+	// The directories themselves stay: they are the server's to use.
+	if _, err := os.Stat(e.ex.WorkDir); err != nil {
+		t.Fatal(err)
 	}
 }
 

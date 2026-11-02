@@ -94,6 +94,9 @@ func New(c Config) (*Service, error) {
 	if _, err := rand.Read(key); err != nil {
 		return nil, err
 	}
+	// Chunks of uploads that a stopped server never finished; no upload can be
+	// in progress yet.
+	os.RemoveAll(filepath.Join(c.Dir, "cache-spool"))
 	if err := os.MkdirAll(filepath.Join(c.Dir, "cache"), 0o700); err != nil {
 		return nil, err
 	}

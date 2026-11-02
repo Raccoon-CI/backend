@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -108,6 +109,25 @@ func (e *dbEnv) upload(run int64, job, name, content string, extra map[string]an
 	fin := map[string]any{"workflow_run_backend_id": fmt.Sprint(run), "workflow_job_run_backend_id": job, "name": name, "size": fmt.Sprint(len(content)), "hash": "sha256:feed"}
 	if code, out := e.call(tok, "FinalizeArtifact", fin); code != 200 {
 		e.t.Fatalf("FinalizeArtifact = %d %v", code, out)
+	}
+}
+
+func TestStartRemovesTheSpoolOfUploadsThatNeverFinished(t *testing.T) {
+	dir := t.TempDir()
+	orphan := filepath.Join(dir, "spool", "raccoonci-spool-123", "block")
+	if err := os.MkdirAll(filepath.Dir(orphan), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(orphan, []byte("half an upload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := New(Config{Dir: dir, PublicURL: "https://ci.example"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := os.Stat(orphan); err == nil {
+		t.Fatal("the spool of a dead server is still there")
 	}
 }
 

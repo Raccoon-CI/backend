@@ -28,6 +28,10 @@ type Local struct {
 	Dir string
 }
 
+// Clean removes what jobs left in Dir when the server died; the executor calls
+// it at start, before any job runs.
+func (l Local) Clean() error { return removeContents(l.Dir) }
+
 // maxLocalSource caps what a job's source may unpack to.
 const maxLocalSource = 2 << 30
 

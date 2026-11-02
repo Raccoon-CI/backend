@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -124,6 +125,9 @@ func New(c Config) (*Service, error) {
 	if c.NewStore == nil {
 		c.NewStore = func(cfg blob.S3Config) (blob.Store, error) { return blob.NewS3(cfg) }
 	}
+	// Blocks of uploads that a stopped server never finished; no upload can be
+	// in progress yet.
+	os.RemoveAll(filepath.Join(c.Dir, "spool"))
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
 		return nil, err

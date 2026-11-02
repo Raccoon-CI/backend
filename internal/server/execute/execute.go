@@ -46,6 +46,46 @@ type Machine interface {
 	Run(ctx context.Context, name string, job dispatch.Job) (dispatch.Result, error)
 }
 
+// A Machine that keeps files on this server (Local) can also have Clean, which
+// the executor calls at start to remove what a run that died left behind.
+type cleaner interface{ Clean() error }
+
+// removeContents deletes everything in dir but not dir itself; a missing dir
+// has nothing in it.
+func removeContents(dir string) error {
+	if dir == "" {
+		return nil
+	}
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var firstErr error
+	for _, e := range entries {
+		if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+// clean removes the leftovers of runs that were in progress when the server
+// died. It runs at start, when none of this server's runs is executing (one
+// server uses a data directory).
+func (e *Executor) clean() {
+	if err := removeContents(e.WorkDir); err != nil {
+		e.log().Warn("removing the work directories of runs that died failed", "dir", e.WorkDir, "err", err)
+	}
+	if c, ok := e.Machine.(cleaner); ok {
+		if err := c.Clean(); err != nil {
+			e.log().Warn("removing what jobs left on this machine failed", "err", err)
+		}
+	}
+}
+
 // Source writes a repository at a commit as a .tar.gz with the files at its
 // root (github.Client.SourceTar).
 type Source interface {
@@ -137,6 +177,7 @@ func (e *Executor) Run(ctx context.Context) error {
 	} else if requeued+ended > 0 {
 		e.log().Warn("runs were in progress when the server stopped", "queued_again", requeued, "ended_as_failed", ended)
 	}
+	e.clean()
 	maxRuns := e.MaxRuns
 	if maxRuns < 1 {
 		maxRuns = 4
