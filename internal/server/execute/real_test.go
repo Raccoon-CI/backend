@@ -41,6 +41,52 @@ func (s tarSource) SourceTar(_ context.Context, _ int64, _, _ string, w io.Write
 	return zw.Close()
 }
 
+const echoGithubToken = `on: push
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          test "$A" = "$B" && echo "same=yes"
+          test -n "$A" && echo "length=${#A}"
+          echo "printed=[$A]"
+        env:
+          A: ${{ github.token }}
+          B: ${{ secrets.GITHUB_TOKEN }}
+`
+
+// With the real runner, the GITHUB_TOKEN the server makes for a job is what
+// `github.token` and `secrets.GITHUB_TOKEN` give a step, and it is masked.
+func TestRealRunnerGivesAJobItsGithubTokenAndMasksIt(t *testing.T) {
+	bin := os.Getenv("RACCOONCI_TEST_BIN")
+	if bin == "" {
+		t.Skip("set RACCOONCI_TEST_BIN to a raccoonci binary to run this")
+	}
+	e := newEnv(t)
+	e.ex.Machine = Local{Binary: bin, Dir: t.TempDir()}
+	e.ex.Source = tarSource{files: map[string]string{".github/workflows/ci.yml": echoGithubToken}}
+	e.ex.Install = "none"
+	e.ex.Tokens = &fakeMinter{}
+	run := e.queue(t, "t", echoGithubToken, nil)
+	e.start(t)
+	if done := e.wait(t, run.ID); done.Conclusion != "success" {
+		t.Fatalf("%q; log: %+v", done.Conclusion, e.log(t, run.ID))
+	}
+	var out []string
+	for _, ev := range e.log(t, run.ID) {
+		if strings.Contains(ev.Text, "ghs_job") {
+			t.Fatalf("the token is in the log: %+v", ev)
+		}
+		out = append(out, ev.Text)
+	}
+	got := strings.Join(out, "\n")
+	for _, want := range []string{"same=yes", "length=", "printed=[***]"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in the log:\n%s", want, got)
+		}
+	}
+}
+
 // This runs the real `raccoonci run-instance`: set RACCOONCI_TEST_BIN to a
 // built raccoonci (make build; dist/raccoonci). It shows that a secret reaches
 // the step, is masked in everything the step prints, and that a fork's run
