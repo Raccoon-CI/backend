@@ -202,7 +202,19 @@ func (e *env) wait(t *testing.T, id int64) store.Run {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("run %d did not finish", id)
+	// Say where it is stuck, so that a rare hang under load can be told from a
+	// run that never started.
+	r, _ := e.st.GetRun(context.Background(), id)
+	var tail []string
+	lines, _ := e.st.ReadLog(context.Background(), id, 0, 10000)
+	for _, l := range lines[max(0, len(lines)-8):] {
+		tail = append(tail, l.Data)
+	}
+	jobs, _ := e.st.ListJobs(context.Background(), id)
+	e.m.mu.Lock()
+	machineCalls := len(e.m.calls)
+	e.m.mu.Unlock()
+	t.Fatalf("run %d did not finish: status %q, attempts %d, %d job rows, %d machine calls; last log lines: %v", id, r.Status, r.Attempts, len(jobs), machineCalls, tail)
 	return store.Run{}
 }
 
