@@ -15,6 +15,32 @@ type TokenMinter interface {
 	RevokeToken(ctx context.Context, token string) error
 }
 
+// IDTokens makes the environment of a job that may ask for ID tokens.
+type IDTokens interface {
+	Env(run int64, job string) map[string]string
+}
+
+// wantsIDToken says whether a job has `id-token: write`: its own
+// `permissions:`, else the workflow's, as for the GITHUB_TOKEN. `write-all`
+// includes it; without any `permissions:` a job has no right to ID tokens.
+func wantsIDToken(w *workflow.Workflow, j *workflow.Job) bool {
+	var spec any
+	switch {
+	case j != nil && j.Permissions != nil:
+		spec = j.Permissions
+	case w != nil && w.Permissions != nil:
+		spec = w.Permissions
+	}
+	switch s := spec.(type) {
+	case string:
+		return s == "write-all"
+	case value.Object:
+		v, _ := s.Get("id-token")
+		return v == "write"
+	}
+	return false
+}
+
 // defaultPermissions is what a job gets when neither it nor its workflow says
 // otherwise. GitHub's own default may be read and write, depending on the
 // repository's settings; the server's is read-only, which is the safe end of

@@ -97,6 +97,15 @@ run 会在它所跑的提交上设置 commit status `raccoonci / <workflow 名>`
 
 workflow 的 `concurrency:`（一个组名，或带 `cancel-in-progress` 的 `group`；表达式可用 `github`、`inputs`、`vars`）按仓库生效，组名不分大小写。一个组里同时只有一个 run 在跑、一个在等：组被占用时到来的 run 要等（日志写 `waiting for run N`），后面又来一个时，在等的那个被取消（`a newer run of the same concurrency group replaced this one`），和 GitHub 一样。`cancel-in-progress` 为真时，组里正在跑的 run 立刻被取消。被取消的等待者会让出位置。源码在等待结束之后才取。限制：只支持 workflow 级的键（job 级的 `concurrency:` 会解析但不生效）；状态在服务进程内存里（单实例，重启后所有 run 重新进组）；只用假机器测过。等待并发组的 run 不占执行器的名额（`MaxRuns`），所以同一个组里一串 push 不会挡住别的 run。
 
+## OpenID Connect（id-token）
+
+有 `permissions: id-token: write` 的 job（取它自己的，没有就取 workflow 的；`write-all` 也算）可以像向 GitHub 要一样向服务端要一个签名的 ID token，拿它去换 AWS、GCP、Azure、Vault 等的短期凭据，不用存任何密钥。签发者是服务端自己：`https://<public-url>/oidc`（`-oidc`，默认开，需要 https 的 `-public-url`）。job 会拿到 `ACTIONS_ID_TOKEN_REQUEST_URL` 和 `ACTIONS_ID_TOKEN_REQUEST_TOKEN`，这正是 `actions/core` 的 `getIDToken(audience)` 和各云的登录 action（`aws-actions/configure-aws-credentials`、`google-github-actions/auth`、`azure/login`）读的；没有这个权限的 job 两个都拿不到，fork 的 pull request 永远拿不到。
+
+- `GET /oidc/.well-known/openid-configuration` 和 `GET /oidc/jwks` 是公开的，供云厂商取来验证。`GET /oidc/token?audience=…` 带 job 的请求 token（绑定一个 run 和 job，job 运行期间且 run 未结束时有效），回 `{"value": "<jwt>"}`。不给 `audience` 时是 `https://github.com/<owner>`，和 GitHub 一样。
+- RS256，有效期 10 分钟。密钥第一次用时生成，用主密钥封存后存库（主密钥换了就换一把新的，验证方只是重新取一次公钥集；没有主密钥时只在内存里，每次启动都变）。
+- claim 用 GitHub 的名字：`iss`、`aud`、`sub`、`jti`、`iat`、`nbf`、`exp`、`ref`、`sha`、`ref_type`、`repository`、`repository_owner`、`actor`、`workflow`、`event_name`、`run_id`、`run_number`、`run_attempt`、`job_workflow_ref`、`runner_environment`（`self-hosted`）。`sub` 是 `repo:<owner>/<name>:ref:<ref>`，pull request 是 `repo:<owner>/<name>:pull_request`。所以为 GitHub 写的信任条件含义不变，但**签发者是这个服务端**，每个云账号里要为它设置一次。没有签发的：`environment`（以及带它的 `sub` 形式）、`head_ref`、`base_ref`、`repository_id`、`job_workflow_sha`、自定义 `sub` 模板。
+- 已测：真 runner（step 取到自己的 token，claim 正确）、用公布的公钥集独立验签、经隧道取发现文档和公钥集。**还没有任何云厂商接受过这样的 token。**
+
 ## 起机限额
 
 InstaBox 限制一个组织每分钟起机的数量（Pro 套餐 10 台），超了回 429。`-starts-per-minute`（默认 10，0 表示自己不计数）让服务端用 62 秒的滑动窗口数自己的起机次数，超了的排队等，所以一阵 run 会被摊开而不是失败；收到 429 后所有起机停 20 秒，被拒的那一次再问（最多约 7 分钟）。日志里会写 `waited … for the machine start limit`。计数只是服务端自己的：同一个 InstaBox 组织里别人起的机器，只能靠 429 才知道。

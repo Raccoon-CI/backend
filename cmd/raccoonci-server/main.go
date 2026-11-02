@@ -31,11 +31,13 @@ import (
 	"raccoonci/internal/server/github"
 	"raccoonci/internal/server/imagesync"
 	"raccoonci/internal/server/intake"
+	"raccoonci/internal/server/oidc"
 	"raccoonci/internal/server/retention"
 	"raccoonci/internal/server/schedule"
 	"raccoonci/internal/server/secrets"
 	"raccoonci/internal/server/storage"
 	"raccoonci/internal/server/store"
+	"raccoonci/internal/server/vault"
 )
 
 // version is set at build time via -ldflags "-X main.version=...".
@@ -78,6 +80,7 @@ func run(args []string) error {
 	imagesEvery := fs.Duration("runner-images-interval", 6*time.Hour, "how often to read what GitHub's hosted runner images preinstall (no token needed); runs are planned with the last good data, else the snapshot built into the binary (0 = never poll)")
 	minFreeMB := fs.Int("min-free-mb", 1024, "keep queued runs waiting while the data directory's disk has less than this many MiB free (0 = no check)")
 	maxSourceMB := fs.Int("max-source-mb", 2048, "fail a run whose repository source package is bigger than this many MiB")
+	oidcOn := fs.Bool("oidc", true, "be an OpenID Connect issuer for jobs with permissions: id-token: write (needs an https -public-url; the issuer is <public-url>/oidc); the signing key is sealed with the master key, or lives in memory without one")
 	jobToken := fs.Bool("job-token", true, "with a GitHub App, give each job its own GITHUB_TOKEN: an installation token for the run's repository only, read-only unless the workflow's permissions: say more (never for a pull request from a fork); a plain token is never passed on to jobs")
 	checks := fs.Bool("checks", true, "with a GitHub App, also make a check run per job (raccoonci / <workflow> / <job>); needs the App's Checks write permission; a plain token cannot, and gets none")
 	localRunner := fs.String("local-runner", "", "run jobs on THIS machine with this raccoonci binary, as this user and without isolation: for development and trusted code only")
@@ -302,6 +305,19 @@ Secrets are read from the environment, or from the file named by NAME_FILE (mode
 		ex.MaxSourceBytes = int64(*maxSourceMB) << 20
 		if *checks {
 			ex.Checks = gh
+		}
+		if *oidcOn && strings.HasPrefix(*publicURL, "https://") {
+			var vlt *vault.Vault
+			if secretsSvc != nil {
+				vlt = secretsSvc.Vault
+			}
+			oidcSvc, err := oidc.New(ctx, oidc.Config{Runs: st, Docs: st, Vault: vlt, PublicURL: *publicURL, Log: log})
+			if err != nil {
+				return err
+			}
+			oidcSvc.Mount(mux)
+			ex.IDTokens = oidcSvc
+			log.Info("OIDC issuer on", "issuer", oidcSvc.Issuer())
 		}
 		if app, ok := tokens.(*github.App); ok && *jobToken {
 			ex.Tokens = app

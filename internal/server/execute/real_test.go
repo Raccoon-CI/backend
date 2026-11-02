@@ -6,10 +6,13 @@ import (
 	"compress/gzip"
 	"context"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
 
+	"raccoonci/internal/server/oidc"
 	"raccoonci/internal/server/secrets"
 	"raccoonci/internal/server/store"
 	"raccoonci/internal/server/vault"
@@ -54,6 +57,59 @@ jobs:
           A: ${{ github.token }}
           B: ${{ secrets.GITHUB_TOKEN }}
 `
+
+const askingForIDToken = `on: push
+permissions:
+  id-token: write
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          jwt=$(curl -sf -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://probe" | python3 -c 'import sys,json; print(json.load(sys.stdin)["value"])')
+          echo "$jwt" | python3 -c '
+          import sys, json, base64
+          p = sys.stdin.read().strip().split(".")[1]
+          c = json.loads(base64.urlsafe_b64decode(p + "=" * (-len(p) % 4)))
+          print("sub=" + c["sub"]); print("aud=" + c["aud"]); print("repository=" + c["repository"]); print("iss=" + c["iss"])'
+`
+
+// With the real runner, a job with id-token: write reaches the OIDC service
+// with the environment the toolkit reads, and gets a token for its own run.
+func TestRealRunnerAJobFetchesItsIDToken(t *testing.T) {
+	bin := os.Getenv("RACCOONCI_TEST_BIN")
+	if bin == "" {
+		t.Skip("set RACCOONCI_TEST_BIN to a raccoonci binary to run this")
+	}
+	e := newEnv(t)
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	svc, err := oidc.New(context.Background(), oidc.Config{Runs: e.st, Docs: e.st, PublicURL: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.Mount(mux)
+	e.ex.IDTokens = svc
+	e.ex.Machine = Local{Binary: bin, Dir: t.TempDir()}
+	e.ex.Source = tarSource{files: map[string]string{".github/workflows/ci.yml": askingForIDToken}}
+	e.ex.Install = "none"
+	run := e.queue(t, "id", askingForIDToken, nil)
+	e.start(t)
+	if done := e.wait(t, run.ID); done.Conclusion != "success" {
+		t.Fatalf("%q; log: %+v", done.Conclusion, e.log(t, run.ID))
+	}
+	var out []string
+	for _, ev := range e.log(t, run.ID) {
+		out = append(out, ev.Text)
+	}
+	got := strings.Join(out, "\n")
+	for _, want := range []string{"sub=repo:acme/web:ref:refs/heads/main", "aud=api://probe", "repository=acme/web", "iss=" + srv.URL + "/oidc"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in the log:\n%s", want, got)
+		}
+	}
+}
 
 const annotating = `on: push
 jobs:

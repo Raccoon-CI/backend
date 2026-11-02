@@ -66,6 +66,93 @@ func TestTokenPermissions(t *testing.T) {
 	}
 }
 
+func TestWantsIDToken(t *testing.T) {
+	const jobs = "jobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: x\n"
+	for _, c := range []struct {
+		name, text string
+		want       bool
+	}{
+		{"nothing said", "on: push\n" + jobs, false},
+		{"workflow id-token: write", "on: push\npermissions:\n  id-token: write\n" + jobs, true},
+		{"id-token: read is not enough", "on: push\npermissions:\n  id-token: read\n" + jobs, false},
+		{"other permissions only", "on: push\npermissions:\n  contents: write\n" + jobs, false},
+		{"write-all", "on: push\npermissions: write-all\n" + jobs, true},
+		{"read-all", "on: push\npermissions: read-all\n" + jobs, false},
+		{"the job's own wins over the workflow's", "on: push\npermissions:\n  id-token: write\njobs:\n  a:\n    runs-on: ubuntu-latest\n    permissions:\n      contents: read\n    steps:\n      - run: x\n", false},
+		{"and the other way", "on: push\npermissions:\n  contents: read\njobs:\n  a:\n    runs-on: ubuntu-latest\n    permissions:\n      id-token: write\n    steps:\n      - run: x\n", true},
+	} {
+		w := parseWF(t, c.text)
+		if got := wantsIDToken(w, w.Jobs[0]); got != c.want {
+			t.Errorf("%s: %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+type fakeIDTokens struct {
+	mu   sync.Mutex
+	jobs []string
+}
+
+func (f *fakeIDTokens) Env(run int64, job string) map[string]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.jobs = append(f.jobs, job)
+	return map[string]string{"ACTIONS_ID_TOKEN_REQUEST_URL": "https://ci.example/oidc/token?api-version=2.0", "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "req-" + job}
+}
+
+const withIDToken = `on: push
+permissions:
+  id-token: write
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hi
+  b:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - run: echo hi
+`
+
+func TestOnlyAJobWithIDTokenWriteGetsTheOIDCEnvironmentAndNeverAFork(t *testing.T) {
+	e := newEnv(t)
+	ids := &fakeIDTokens{}
+	e.ex.IDTokens = ids
+	run := e.queue(t, "oidc", withIDToken, nil)
+	e.start(t)
+	e.wait(t, run.ID)
+	e.m.mu.Lock()
+	byJob := map[string]map[string]string{}
+	for _, c := range e.m.calls {
+		byJob[c.spec.Job] = c.spec.ServiceEnv
+	}
+	e.m.mu.Unlock()
+	if byJob["a"]["ACTIONS_ID_TOKEN_REQUEST_URL"] == "" || !strings.HasPrefix(byJob["a"]["ACTIONS_ID_TOKEN_REQUEST_TOKEN"], "req-a-") {
+		t.Errorf("job a (id-token: write) env = %v", byJob["a"])
+	}
+	if _, ok := byJob["b"]["ACTIONS_ID_TOKEN_REQUEST_URL"]; ok {
+		t.Errorf("job b (permissions: contents: read) was given ID tokens: %v", byJob["b"])
+	}
+	if len(ids.jobs) != 1 {
+		t.Errorf("IDTokens asked for %v", ids.jobs)
+	}
+
+	fe := newEnv(t)
+	fe.ex.IDTokens = &fakeIDTokens{}
+	fork := fe.queue(t, "fork", withIDToken, func(r *store.Run) { r.Fork = true; r.Event = "pull_request"; r.PullRequest = 3 })
+	fe.start(t)
+	fe.wait(t, fork.ID)
+	fe.m.mu.Lock()
+	defer fe.m.mu.Unlock()
+	for _, c := range fe.m.calls {
+		if _, ok := c.spec.ServiceEnv["ACTIONS_ID_TOKEN_REQUEST_URL"]; ok {
+			t.Errorf("a fork's job %s was given ID tokens", c.spec.Job)
+		}
+	}
+}
+
 type fakeMinter struct {
 	mu    sync.Mutex
 	asked []map[string]string

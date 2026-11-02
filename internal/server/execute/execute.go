@@ -143,6 +143,9 @@ type Executor struct {
 	// Checks, if set, gets a check run per job instance for events that carry a
 	// GitHub App installation (a plain token cannot write check runs).
 	Checks CheckRunner
+	// IDTokens, if set, gives the jobs that have `permissions: id-token: write`
+	// what they need to ask for OpenID Connect tokens (oidc.Service).
+	IDTokens IDTokens
 	// Tokens, if set, makes each job instance a GITHUB_TOKEN of its own (a
 	// GitHub App installation token for the run's repository); see secretsFor.
 	Tokens TokenMinter
@@ -658,6 +661,14 @@ func (x *execution) runInstance(ctx context.Context, inst engine.RemoteInstance)
 		if svcEnv, err = x.e.Services.JobEnv(x.run.ID, fmt.Sprintf("%s-%d", inst.Job.ID, n)); err != nil {
 			return runner.Result{}, err
 		}
+	}
+	// Only a job that asks for `id-token: write` can ask for ID tokens, and
+	// never a pull request from a fork (as on GitHub).
+	if x.e.IDTokens != nil && !x.run.Fork && wantsIDToken(x.w, inst.Job) {
+		if svcEnv == nil {
+			svcEnv = map[string]string{}
+		}
+		maps.Copy(svcEnv, x.e.IDTokens.Env(x.run.ID, fmt.Sprintf("%s-%d", inst.Job.ID, n)))
 	}
 	install := x.e.Install
 	if install == "" {
