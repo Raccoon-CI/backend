@@ -206,6 +206,50 @@ func (e *env) log(t *testing.T, id int64) []logEvent {
 	return out
 }
 
+func TestRunsWaitWhileTheDiskIsNearlyFullAndGoOnWhenSpaceReturns(t *testing.T) {
+	e := newEnv(t)
+	var mu sync.Mutex
+	free := int64(10 << 20)
+	e.ex.MinFreeBytes = 100 << 20
+	e.ex.Free = func() (int64, error) { mu.Lock(); defer mu.Unlock(); return free, nil }
+	run := e.queue(t, "disk", twoJobs, nil)
+	e.start(t)
+	time.Sleep(300 * time.Millisecond)
+	if r, _ := e.st.GetRun(context.Background(), run.ID); r.Status != store.RunQueued {
+		t.Fatalf("a run was taken on a full disk: %q", r.Status)
+	}
+	mu.Lock()
+	free = 1 << 30
+	mu.Unlock()
+	if done := e.wait(t, run.ID); done.Conclusion != "success" {
+		t.Fatalf("conclusion %q", done.Conclusion)
+	}
+}
+
+func TestAnOversizeSourceFailsTheRunWithAClearMessage(t *testing.T) {
+	e := newEnv(t)
+	e.src.bytes = strings.Repeat("x", 4096)
+	e.ex.MaxSourceBytes = 1024
+	run := e.queue(t, "big", twoJobs, nil)
+	e.start(t)
+	done := e.wait(t, run.ID)
+	if done.Conclusion != "failure" {
+		t.Fatalf("conclusion %q", done.Conclusion)
+	}
+	var found bool
+	for _, ev := range e.log(t, run.ID) {
+		if strings.Contains(ev.Text, "bigger than the limit") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no message about the limit: %+v", e.log(t, run.ID))
+	}
+	if entries, _ := os.ReadDir(e.ex.WorkDir); len(entries) != 0 {
+		t.Fatalf("the failed run left %d entries in the work directory", len(entries))
+	}
+}
+
 func TestARunIsFetchedSentToMachinesAndLogged(t *testing.T) {
 	e := newEnv(t)
 	run := e.queue(t, "d1", twoJobs, nil)

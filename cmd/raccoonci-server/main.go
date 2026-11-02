@@ -73,6 +73,8 @@ func run(args []string) error {
 	publicURL := fs.String("public-url", "", "the https address the machines reach this server at (their job assignments, artifacts); needed to run jobs")
 	snapshot := fs.String("snapshot", os.Getenv("RACCOONCI_INSTABOX_SNAPSHOT"), "the InstaBox runner snapshot machines start from (env RACCOONCI_INSTABOX_SNAPSHOT); needed to run jobs")
 	status := fs.Bool("status", true, "report each run to GitHub as a commit status (raccoonci / <workflow>) on the commit it ran; the token or App needs to write commit statuses")
+	minFreeMB := fs.Int("min-free-mb", 1024, "keep queued runs waiting while the data directory's disk has less than this many MiB free (0 = no check)")
+	maxSourceMB := fs.Int("max-source-mb", 2048, "fail a run whose repository source package is bigger than this many MiB")
 	checks := fs.Bool("checks", true, "with a GitHub App, also make a check run per job (raccoonci / <workflow> / <job>); needs the App's Checks write permission; a plain token cannot, and gets none")
 	localRunner := fs.String("local-runner", "", "run jobs on THIS machine with this raccoonci binary, as this user and without isolation: for development and trusted code only")
 	s3Bucket := fs.String("storage-s3-bucket", "", "keep artifacts and caches in this S3-compatible bucket (R2, S3, ...) instead of on this disk; the bucket must be private (it is checked at start)")
@@ -280,6 +282,10 @@ Secrets are read from the environment, or from the file named by NAME_FILE (mode
 		if *status {
 			ex.Reporter = execute.Statuses{GH: gh}
 		}
+		if *minFreeMB > 0 {
+			ex.MinFreeBytes, ex.Free = int64(*minFreeMB)<<20, execute.DiskFree(*dataDir)
+		}
+		ex.MaxSourceBytes = int64(*maxSourceMB) << 20
 		if *checks {
 			ex.Checks = gh
 		}

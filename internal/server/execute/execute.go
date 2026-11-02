@@ -125,6 +125,12 @@ type Executor struct {
 	Install string
 	// Poll is how often the queue is looked at when nobody calls Wake.
 	Poll time.Duration
+	// MinFreeBytes, with Free, keeps new runs waiting in the queue while the
+	// work directory's disk has less than this available (0 = no check).
+	MinFreeBytes int64
+	Free         func() (int64, error)
+	// MaxSourceBytes caps the source package fetched for one run (default 2 GiB).
+	MaxSourceBytes int64
 	// Reporter, if set, is told when a run starts and how it ended.
 	Reporter Reporter
 	// Checks, if set, gets a check run per job instance for events that carry a
@@ -190,8 +196,17 @@ func (e *Executor) Run(ctx context.Context) error {
 		poll = 2 * time.Second
 	}
 	slots := make(chan struct{}, maxRuns)
+	warned := false
 	for {
 		for ctx.Err() == nil {
+			if low, free := e.lowOnDisk(); low {
+				if !warned {
+					e.log().Warn("the disk is nearly full: queued runs wait until space is freed", "free_mib", free>>20, "needed_mib", e.MinFreeBytes>>20)
+					warned = true
+				}
+				break
+			}
+			warned = false
 			select {
 			case slots <- struct{}{}:
 			default:
@@ -444,7 +459,11 @@ func (e *Executor) prepare(ctx context.Context, run store.Run, sink *sink) (*exe
 		os.RemoveAll(dir)
 		return nil, err
 	}
-	err = e.Source.SourceTar(ctx, ev.InstallationID, run.Repo, run.SHA, f)
+	maxSource := e.MaxSourceBytes
+	if maxSource <= 0 {
+		maxSource = defaultMaxSource
+	}
+	err = e.Source.SourceTar(ctx, ev.InstallationID, run.Repo, run.SHA, &cappedWriter{w: f, max: maxSource})
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
