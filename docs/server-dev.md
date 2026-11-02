@@ -81,7 +81,7 @@ GET    /v1/tokens    DELETE /v1/tokens/{id}                                     
 
 ## Status on GitHub
 
-A run sets the commit status `raccoonci / <workflow name>` on the commit it ran: `pending` ("Running") when it starts, then `success`, `failure` or `error` ("Cancelled") with how long it took. It shows on the commit and, for a pull request, in its checks. It works with a plain token (needs the `repo:status` ability) and with a GitHub App (needs the "Commit statuses" permission); `-status=false` turns it off. A failed report is logged and never fails the run. Check runs, one line per job with annotations and a summary, can only be written by a GitHub App and are not done.
+A run sets the commit status `raccoonci / <workflow name>` on the commit it ran: `pending` ("Running") when it starts, then `success`, `failure` or `error` ("Cancelled") with how long it took. It shows on the commit and, for a pull request, in its checks. It works with a plain token (needs the `repo:status` ability) and with a GitHub App (needs the "Commit statuses" permission); `-status=false` turns it off. A failed report is logged and never fails the run. With a GitHub App each job instance also gets a check run `raccoonci / <workflow name> / <job>` (`in_progress` when it starts, then `success`, `failure` or `cancelled`); it needs the App's Checks write permission, a plain token cannot write check runs and gets none, and `-checks=false` turns it off. Not done: annotations and the step summary in the check run. Not tried against real GitHub, because no App is registered yet.
 
 `/v1/openapi.yaml` describes all of it; a test keeps it in step with the routes.
 
@@ -100,6 +100,10 @@ InstaBox limits how many machines an organization starts a minute (10 on the Pro
 ## Log retention
 
 The log of a finished run is kept 90 days (`-log-retention-days`, fractions work, 0 keeps it for ever); a sweep at start and every hour deletes the lines of runs that ended earlier. The run, its jobs and its result stay. Its `log_purged` is then true, and `GET /v1/runs/{id}/log` (and the event stream) answer **410 Gone** instead of an empty log. Not done: the raw payloads of old webhook deliveries and the workflow texts of old runs are kept (a rerun reads them), and SQLite keeps the freed pages for reuse rather than shrinking the file.
+
+Disk protection: while the disk holding `-data-dir` has less than `-min-free-mb` (default 1024, 0 = no check) available, the server takes no new run from the queue; it logs one warning and goes on by itself when space is back. A run whose source package is bigger than `-max-source-mb` (default 2048) fails with a message saying so; the download is cut while it is written, and nothing is left in the work directory. Not done: quotas per repository or organization, and a free-space check in the artifact service.
+
+Runner images: at start and every `-runner-images-interval` (default 6 h, 0 = never) the server reads what GitHub's hosted images preinstall (the same sources as `raccoonci runner-images update`, no token needed) into the database. Runs are planned with the built-in snapshot with that data laid over it; an image that cannot be read keeps its last good data. Only the server's own planning uses it today: the machines run with the snapshot built into their binary.
 
 ## Artifacts
 

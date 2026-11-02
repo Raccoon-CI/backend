@@ -81,7 +81,7 @@ GET    /v1/tokens    DELETE /v1/tokens/{id}                                     
 
 ## GitHub 上的状态
 
-run 会在它所跑的提交上设置 commit status `raccoonci / <workflow 名>`：开始时 `pending`（"Running"），之后是 `success`、`failure` 或 `error`（"Cancelled"），带上耗时。它显示在提交上，pull request 的 checks 里也能看到。用普通 token（需要 `repo:status` 能力）或 GitHub App（需要 "Commit statuses" 权限）都行；`-status=false` 关闭。报告失败只记日志，不会让 run 失败。check run（每个 job 一行、带注解和摘要）只有 GitHub App 能写，还没做。
+run 会在它所跑的提交上设置 commit status `raccoonci / <workflow 名>`：开始时 `pending`（"Running"），之后是 `success`、`failure` 或 `error`（"Cancelled"），带上耗时。它显示在提交上，pull request 的 checks 里也能看到。用普通 token（需要 `repo:status` 能力）或 GitHub App（需要 "Commit statuses" 权限）都行；`-status=false` 关闭。报告失败只记日志，不会让 run 失败。用 GitHub App 时，每个 job 实例还会有一个 check run `raccoonci / <workflow 名> / <job>`（开始时 `in_progress`，之后是 `success`、`failure` 或 `cancelled`）；需要 App 有 Checks 写权限，普通 token 写不了 check run，所以不会建；`-checks=false` 关闭。没做：check run 里的注解和 step summary。还没对真实 GitHub 试过，因为 App 还没注册。
 
 `/v1/openapi.yaml` 描述这一切；有一个测试保证它和路由一致。
 
@@ -100,6 +100,10 @@ InstaBox 限制一个组织每分钟起机的数量（Pro 套餐 10 台），超
 ## 日志保留
 
 已结束的 run 的日志保留 90 天（`-log-retention-days`，可以写小数，0 表示永久保留）；启动时和之后每小时清理一次，删掉更早结束的 run 的日志行。run、它的 job 和结果都保留，`log_purged` 变为 true，这时 `GET /v1/runs/{id}/log`（以及事件流）回 **410 Gone**，而不是一份空日志。没做：旧 webhook 投递的原始载荷和旧 run 的 workflow 原文还留着（重跑要读它们）；SQLite 把释放的页留着复用，文件本身不会缩小。
+
+磁盘保护：`-data-dir` 所在的盘剩余空间低于 `-min-free-mb`（默认 1024，0 表示不检查）时，服务端不再从队列里领新的 run，只记一条警告，空间回来后自己继续。一个 run 的源码包超过 `-max-source-mb`（默认 2048）就让这个 run 失败并写明原因；下载在写入时就被截断，工作目录里不留东西。没做：按仓库或组织的配额，以及 artifact 服务的剩余空间检查。
+
+runner 镜像：启动时和之后每 `-runner-images-interval`（默认 6 小时，0 表示不轮询）把 GitHub 托管镜像预装了什么读进数据库（来源和 `raccoonci runner-images update` 一样，不需要令牌）。run 用内置快照盖上这份数据来规划；读不到的镜像保留上次的好数据。目前只有服务端自己的规划用它：机器上用的是它们二进制里内置的快照。
 
 ## Artifact
 
