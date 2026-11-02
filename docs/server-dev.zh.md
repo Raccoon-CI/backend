@@ -81,7 +81,7 @@ GET    /v1/tokens    DELETE /v1/tokens/{id}                                     
 
 ## GitHub 上的状态
 
-run 会在它所跑的提交上设置 commit status `raccoonci / <workflow 名>`：开始时 `pending`（"Running"），之后是 `success`、`failure` 或 `error`（"Cancelled"），带上耗时。它显示在提交上，pull request 的 checks 里也能看到。用普通 token（需要 `repo:status` 能力）或 GitHub App（需要 "Commit statuses" 权限）都行；`-status=false` 关闭。报告失败只记日志，不会让 run 失败。用 GitHub App 时，每个 job 实例还会有一个 check run `raccoonci / <workflow 名> / <job>`（开始时 `in_progress`，之后是 `success`、`failure` 或 `cancelled`）；需要 App 有 Checks 写权限，普通 token 写不了 check run，所以不会建；`-checks=false` 关闭。没做：check run 里的注解和 step summary。还没对真实 GitHub 试过，因为 App 还没注册。
+run 会在它所跑的提交上设置 commit status `raccoonci / <workflow 名>`：开始时 `pending`（"Running"），之后是 `success`、`failure` 或 `error`（"Cancelled"），带上耗时。它显示在提交上，pull request 的 checks 里也能看到。用普通 token（需要 `repo:status` 能力）或 GitHub App（需要 "Commit statuses" 权限）都行；`-status=false` 关闭。报告失败只记日志，不会让 run 失败。用 GitHub App 时，每个 job 实例还会有一个 check run `raccoonci / <workflow 名> / <job>`（开始时 `in_progress`，之后是 `success`、`failure` 或 `cancelled`）；需要 App 有 Checks 写权限，普通 token 写不了 check run，所以不会建；`-checks=false` 关闭。check run 里带着 job summary（step 写进 `$GITHUB_STEP_SUMMARY` 的内容，markdown，密钥已遮蔽）和 step 打印的注解（`::error file=…,line=…,title=…::消息`、`::warning`、`::notice`；每个 job 最多 50 条，其余在 summary 里计数；没有可用文件或路径跑出了仓库的，挂在 `.github` 第 1 行，和 GitHub 一样）。没做：每个 step 一行、problem matcher 产生的注解（runner 还没有 problem matcher）、在报告之前就失败的 job 的 summary。
 
 `/v1/openapi.yaml` 描述这一切；有一个测试保证它和路由一致。
 

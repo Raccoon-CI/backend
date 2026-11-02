@@ -634,10 +634,11 @@ func (f *fakeReporter) states() []string {
 }
 
 type fakeChecks struct {
-	mu   sync.Mutex
-	got  []string
-	next int64
-	fail bool
+	mu      sync.Mutex
+	got     []string
+	updates []github.CheckRun // what each completed check run was given
+	next    int64
+	fail    bool
 }
 
 func (f *fakeChecks) CreateCheckRun(_ context.Context, inst int64, repo, sha string, r github.CheckRun) (int64, error) {
@@ -655,6 +656,7 @@ func (f *fakeChecks) UpdateCheckRun(_ context.Context, inst int64, repo string, 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.got = append(f.got, fmt.Sprintf("update %d %s %s", id, r.Name, r.Conclusion))
+	f.updates = append(f.updates, r)
 	return nil
 }
 

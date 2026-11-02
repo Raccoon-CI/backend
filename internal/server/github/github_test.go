@@ -243,6 +243,38 @@ func TestChangedFilesAndUnknown(t *testing.T) {
 	}
 }
 
+func TestCheckRunAnnotationsAreSentCappedAndTrimmed(t *testing.T) {
+	var patched struct {
+		Output struct {
+			Annotations []map[string]any `json:"annotations"`
+		} `json:"output"`
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&patched)
+		fmt.Fprint(w, `{"id":7}`)
+	}))
+	defer srv.Close()
+	c := &Client{Base: srv.URL, Tokens: StaticToken("tok")}
+	var notes []Annotation
+	for i := 0; i < 70; i++ {
+		notes = append(notes, Annotation{Path: "a.go", StartLine: i + 1, EndLine: i + 1, Level: LevelWarning,
+			Title: strings.Repeat("t", 400), Message: strings.Repeat("m", 70000)})
+	}
+	err := c.UpdateCheckRun(context.Background(), 0, "o/r", 7, CheckRun{Name: "n", Status: CheckCompleted, Conclusion: CheckFailure, Summary: "s", Annotations: notes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := patched.Output.Annotations
+	if len(got) != 50 {
+		t.Fatalf("%d annotations sent, want GitHub's limit of 50", len(got))
+	}
+	a := got[0]
+	if a["path"] != "a.go" || a["annotation_level"] != "warning" || int(a["start_line"].(float64)) != 1 ||
+		len(a["title"].(string)) != 255 || len(a["message"].(string)) != 64<<10 {
+		t.Fatalf("annotation = path %v level %v line %v title %d message %d", a["path"], a["annotation_level"], a["start_line"], len(a["title"].(string)), len(a["message"].(string)))
+	}
+}
+
 func TestCheckRunsAreMadeAndCompleted(t *testing.T) {
 	var made, patched map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

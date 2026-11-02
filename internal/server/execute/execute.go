@@ -623,11 +623,13 @@ func (x *execution) runInstance(ctx context.Context, inst engine.RemoteInstance)
 	}
 	conclusion := runner.Failure
 	check := x.startCheck(inst.Name)
+	notes := &annotations{} // what the steps reported, for the check run
+	var jobSummary string   // $GITHUB_STEP_SUMMARY, for the check run
 	defer func() {
 		if ctx.Err() != nil {
-			check.finish(runner.Cancelled)
+			check.finish(runner.Cancelled, jobSummary, notes)
 		} else {
-			check.finish(conclusion)
+			check.finish(conclusion, jobSummary, notes)
 		}
 		if err := x.e.Store.FinishJob(context.Background(), job.ID, string(conclusion)); err != nil {
 			x.log.Error("recording the end of a job failed", "job", inst.Name, "err", err)
@@ -662,7 +664,7 @@ func (x *execution) runInstance(ctx context.Context, inst engine.RemoteInstance)
 	if err != nil {
 		return runner.Result{}, err
 	}
-	reader := &wire.Reader{Name: inst.Name, Event: x.sink.Add}
+	reader := &wire.Reader{Name: inst.Name, Event: func(e runner.Event) { x.sink.Add(e); notes.add(e) }}
 	defer reader.Flush()
 	secrets, revoke := x.secretsFor(ctx, inst)
 	defer revoke() // the job's GITHUB_TOKEN stops working when the job is over
@@ -695,7 +697,7 @@ func (x *execution) runInstance(ctx context.Context, inst engine.RemoteInstance)
 	case !ok:
 		return runner.Result{}, fmt.Errorf("the machine exited with status %d without a result (its output is in the log)", res.ExitCode)
 	}
-	conclusion = out.Conclusion
+	conclusion, jobSummary = out.Conclusion, out.Summary
 	return out, nil
 }
 

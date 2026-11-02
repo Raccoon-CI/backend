@@ -55,6 +55,59 @@ jobs:
           B: ${{ secrets.GITHUB_TOKEN }}
 `
 
+const annotating = `on: push
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "::error file=a.go,line=3,title=Bad::boom"
+          echo "::warning::careful"
+          printf '## Done\n3 checks\n' >> "$GITHUB_STEP_SUMMARY"
+`
+
+// With the real runner, a step's annotations and its $GITHUB_STEP_SUMMARY reach
+// the job's check run.
+func TestRealRunnerAnnotationsAndSummaryReachTheCheckRun(t *testing.T) {
+	bin := os.Getenv("RACCOONCI_TEST_BIN")
+	if bin == "" {
+		t.Skip("set RACCOONCI_TEST_BIN to a raccoonci binary to run this")
+	}
+	e := newEnv(t)
+	e.ex.Machine = Local{Binary: bin, Dir: t.TempDir()}
+	e.ex.Source = tarSource{files: map[string]string{".github/workflows/ci.yml": annotating}}
+	e.ex.Install = "none"
+	checks := &fakeChecks{}
+	e.ex.Checks = checks
+	run := e.queue(t, "ann", annotating, nil)
+	e.start(t)
+	if done := e.wait(t, run.ID); done.Conclusion != "success" {
+		t.Fatalf("%q; log: %+v", done.Conclusion, e.log(t, run.ID))
+	}
+	waitLines(checks, 2)
+	checks.mu.Lock()
+	defer checks.mu.Unlock()
+	if len(checks.updates) != 1 {
+		t.Fatalf("check updates: %+v", checks.updates)
+	}
+	u := checks.updates[0]
+	if !strings.Contains(u.Summary, "## Done") || !strings.Contains(u.Summary, "3 checks") {
+		t.Errorf("summary = %q", u.Summary)
+	}
+	var sawError, sawWarning bool
+	for _, a := range u.Annotations {
+		switch {
+		case a.Path == "a.go" && a.StartLine == 3 && a.Title == "Bad" && a.Message == "boom" && a.Level == "failure":
+			sawError = true
+		case a.Path == ".github" && a.Message == "careful" && a.Level == "warning":
+			sawWarning = true
+		}
+	}
+	if !sawError || !sawWarning {
+		t.Errorf("annotations = %+v", u.Annotations)
+	}
+}
+
 // With the real runner, the GITHUB_TOKEN the server makes for a job is what
 // `github.token` and `secrets.GITHUB_TOKEN` give a step, and it is masked.
 func TestRealRunnerGivesAJobItsGithubTokenAndMasksIt(t *testing.T) {

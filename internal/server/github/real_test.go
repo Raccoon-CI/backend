@@ -4,10 +4,70 @@ import (
 	"context"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 )
+
+// TestRealCheckRunAnnotations sends a check run with annotations (one for a file,
+// one without a place, as the server does) to real GitHub and reads them back.
+// It leaves one completed neutral check run named "raccoonci annotation probe"
+// on RACCOONCI_TEST_SHA, which GitHub does not let anyone delete. Same
+// variables as TestRealAppTokens.
+func TestRealCheckRunAnnotations(t *testing.T) {
+	id, keyFile, repo, sha := os.Getenv("RACCOONCI_TEST_APP_ID"), os.Getenv("RACCOONCI_TEST_APP_KEY_FILE"),
+		os.Getenv("RACCOONCI_TEST_REPO"), os.Getenv("RACCOONCI_TEST_SHA")
+	if id == "" || keyFile == "" || repo == "" || sha == "" {
+		t.Skip("set RACCOONCI_TEST_APP_ID, _APP_KEY_FILE, _REPO and _SHA to run against real GitHub")
+	}
+	var appID int64
+	for _, c := range id {
+		appID = appID*10 + int64(c-'0')
+	}
+	pem, err := os.ReadFile(keyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := ParsePrivateKey(pem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := &App{ID: appID, Key: key}
+	ctx := context.Background()
+	inst, err := app.InstallationOf(ctx, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &Client{Tokens: app}
+	now := time.Now()
+	checkID, err := c.CreateCheckRun(ctx, inst, repo, sha, CheckRun{Name: "raccoonci annotation probe", Status: CheckInProgress, StartedAt: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = c.UpdateCheckRun(ctx, inst, repo, checkID, CheckRun{
+		Name: "raccoonci annotation probe", Status: CheckCompleted, Conclusion: "neutral", CompletedAt: now,
+		Title: "Annotation probe", Summary: "## Probe\n\nA check run with two annotations, made by the real-GitHub test.",
+		Annotations: []Annotation{
+			{Path: "README.md", StartLine: 1, EndLine: 2, Level: LevelWarning, Title: "A file", Message: "with a place"},
+			{Path: ".github", StartLine: 1, EndLine: 1, Level: LevelNotice, Message: "without one"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("GitHub refused the annotations: %v", err)
+	}
+	var got []struct {
+		Path, Message string
+		Level         string `json:"annotation_level"`
+		Title         string
+	}
+	if err := c.get(ctx, inst, "/repos/"+repo+"/check-runs/"+strconv.FormatInt(checkID, 10)+"/annotations", &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Path != "README.md" || got[0].Level != "warning" || got[0].Title != "A file" || got[1].Path != ".github" || got[1].Message != "without one" {
+		t.Fatalf("annotations read back: %+v", got)
+	}
+}
 
 // TestRealAppTokens checks, against real GitHub, what a job's GITHUB_TOKEN is:
 // scoped to one repository, limited to the permissions asked for, and dead

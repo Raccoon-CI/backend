@@ -32,7 +32,37 @@ type CheckRun struct {
 	StartedAt   time.Time
 	CompletedAt time.Time
 	DetailsURL  string
+	// Annotations are shown on the check run and, with a path of the
+	// repository, on the files of the commit. At most MaxAnnotations go in one
+	// request; the rest are dropped.
+	Annotations []Annotation
 }
+
+// MaxAnnotations is GitHub's limit per check run request.
+const MaxAnnotations = 50
+
+// Annotation levels, as GitHub names them.
+const (
+	LevelNotice  = "notice"
+	LevelWarning = "warning"
+	LevelFailure = "failure"
+)
+
+// Annotation is one message tied to a place in the commit.
+type Annotation struct {
+	Path      string `json:"path"`
+	StartLine int    `json:"start_line"`
+	EndLine   int    `json:"end_line"`
+	Level     string `json:"annotation_level"`
+	Title     string `json:"title,omitempty"`
+	Message   string `json:"message"`
+}
+
+// GitHub's limits for one annotation's text.
+const (
+	maxAnnotationTitle   = 255
+	maxAnnotationMessage = 64 << 10
+)
 
 // maxCheckText is GitHub's limit for a check run's summary (65535 characters).
 const maxCheckText = 65535
@@ -63,7 +93,22 @@ func (r CheckRun) body(withSHA string) map[string]any {
 		if title == "" {
 			title = r.Name
 		}
-		b["output"] = map[string]string{"title": title, "summary": s}
+		out := map[string]any{"title": title, "summary": s}
+		if len(r.Annotations) > 0 {
+			list := r.Annotations[:min(len(r.Annotations), MaxAnnotations)]
+			clean := make([]Annotation, len(list))
+			for i, a := range list {
+				if len(a.Title) > maxAnnotationTitle {
+					a.Title = a.Title[:maxAnnotationTitle]
+				}
+				if len(a.Message) > maxAnnotationMessage {
+					a.Message = a.Message[:maxAnnotationMessage]
+				}
+				clean[i] = a
+			}
+			out["annotations"] = clean
+		}
+		b["output"] = out
 	}
 	return b
 }

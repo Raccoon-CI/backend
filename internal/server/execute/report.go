@@ -78,8 +78,10 @@ func (x *execution) startCheck(job string) *jobCheck {
 	return c
 }
 
-// finish completes the check run with the job's conclusion.
-func (c *jobCheck) finish(conclusion runner.Conclusion) {
+// finish completes the check run with the job's conclusion, its summary
+// ($GITHUB_STEP_SUMMARY, markdown; the plain title line when there is none)
+// and the annotations its steps reported.
+func (c *jobCheck) finish(conclusion runner.Conclusion, jobSummary string, notes *annotations) {
 	if c == nil {
 		return
 	}
@@ -90,11 +92,23 @@ func (c *jobCheck) finish(conclusion runner.Conclusion) {
 	ended := time.Now()
 	took := ended.Sub(c.started).Round(time.Second)
 	title := fmt.Sprintf("%s in %v", strings.ToUpper(string(conclusion)[:1])+string(conclusion)[1:], took)
+	summary := fmt.Sprintf("%s: %s.", c.name, title)
+	if strings.TrimSpace(jobSummary) != "" {
+		summary = jobSummary
+	}
+	var list []github.Annotation
+	if notes != nil {
+		var dropped int
+		list, dropped = notes.get()
+		if dropped > 0 {
+			summary += fmt.Sprintf("\n\n%d more annotations were left out (GitHub takes %d per check run); the run's log has all of them.", dropped, github.MaxAnnotations)
+		}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	err := c.x.e.Checks.UpdateCheckRun(ctx, c.x.installation, c.x.run.Repo, id, github.CheckRun{
 		Name: c.name, Status: github.CheckCompleted, Conclusion: checkConclusion(conclusion),
-		Title: title, Summary: fmt.Sprintf("%s: %s.", c.name, title), CompletedAt: ended})
+		Title: title, Summary: summary, Annotations: list, CompletedAt: ended})
 	if err != nil {
 		c.x.log.Warn("completing a check run failed", "check", c.name, "err", err)
 	}
