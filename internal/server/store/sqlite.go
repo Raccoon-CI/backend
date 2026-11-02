@@ -37,6 +37,11 @@ func OpenSQLite(path string) (*SQLite, error) {
 	q.Add("_pragma", "busy_timeout(5000)")
 	q.Add("_pragma", "journal_mode(WAL)")
 	q.Add("_pragma", "foreign_keys(1)")
+	// Every transaction here writes. A deferred one that reads first and writes
+	// after fails with SQLITE_BUSY_SNAPSHOT (517) when another connection
+	// committed in between, and busy_timeout does not retry that; an immediate
+	// one takes the write lock at the start and waits for it instead.
+	q.Add("_txlock", "immediate")
 	dsn := (&url.URL{Scheme: "file", Path: abs, RawQuery: q.Encode()}).String()
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
