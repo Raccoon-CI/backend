@@ -77,8 +77,11 @@ type Run struct {
 	// WorkflowText is the workflow file at SHA, kept so that a rerun uses the
 	// same text. Lists leave it out.
 	WorkflowText string
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	// Attempts is how many times the executor has taken the run: 1 for a run
+	// that ran once, more when a stopped server's run was queued again.
+	Attempts  int
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // Job is one job instance of a run.
@@ -176,6 +179,15 @@ type Store interface {
 	// InterruptRuns ends the runs (and their jobs) still in progress, which a
 	// stopped server left, with the conclusion given. It returns how many.
 	InterruptRuns(ctx context.Context, conclusion string) (int, error)
+	// Requeue puts a run in progress back in the queue (and forgets its jobs;
+	// its log stays) if it has been taken fewer than maxAttempts times. ok is
+	// false when it was not in progress or has used its attempts, and the caller
+	// ends it.
+	Requeue(ctx context.Context, id int64, maxAttempts int) (ok bool, err error)
+	// RequeueInterrupted is Requeue for every run a stopped server left in
+	// progress; those that have used their attempts are ended with conclusion
+	// (as InterruptRuns does). It returns how many of each.
+	RequeueInterrupted(ctx context.Context, maxAttempts int, conclusion string) (requeued, ended int, err error)
 
 	// StartJob records that a job instance of a run began (again, if the name
 	// is already there).

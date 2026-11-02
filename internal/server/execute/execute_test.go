@@ -349,7 +349,7 @@ func TestAnInvalidStoredWorkflowFailsTheRun(t *testing.T) {
 	}
 }
 
-func TestRunsLeftInProgressByAStoppedServerAreEndedAtStart(t *testing.T) {
+func TestRunsLeftInProgressByAStoppedServerAreRunAgain(t *testing.T) {
 	e := newEnv(t)
 	left := e.queue(t, "left", twoJobs, nil)
 	if _, ok, _ := e.st.ClaimRun(context.Background()); !ok { // a previous process claimed it and died
@@ -358,12 +358,34 @@ func TestRunsLeftInProgressByAStoppedServerAreEndedAtStart(t *testing.T) {
 	e.m.handle = func(c call, out *wire.Encoder) (dispatch.Result, error) { return succeed(c, out) }
 	e.start(t)
 	got := e.wait(t, left.ID)
-	if got.Conclusion != "failure" || len(e.m.calls) != 0 {
-		t.Fatalf("interrupted run: %q, %d machine calls; it must be ended, not run again", got.Conclusion, len(e.m.calls))
+	if got.Conclusion != "success" || got.Attempts != 2 || len(e.m.calls) == 0 {
+		t.Fatalf("interrupted run: %q after %d attempts, %d machine calls; it must be run again", got.Conclusion, got.Attempts, len(e.m.calls))
+	}
+	var said bool
+	for _, l := range e.log(t, left.ID) {
+		said = said || (l.Kind == "warning" && strings.Contains(l.Text, "attempt 2"))
+	}
+	if !said {
+		t.Fatal("the log must say the run was started again")
 	}
 }
 
-func TestStoppingTheServerCancelsRunsInProgress(t *testing.T) {
+func TestARunTakenTooOftenEndsAsFailedInsteadOfLoopingForEver(t *testing.T) {
+	e := newEnv(t)
+	e.ex.MaxAttempts = 1
+	left := e.queue(t, "left", twoJobs, nil)
+	if _, ok, _ := e.st.ClaimRun(context.Background()); !ok {
+		t.Fatal("setup")
+	}
+	e.m.handle = func(c call, out *wire.Encoder) (dispatch.Result, error) { return succeed(c, out) }
+	e.start(t)
+	got := e.wait(t, left.ID)
+	if got.Conclusion != "failure" || len(e.m.calls) != 0 {
+		t.Fatalf("run: %q, %d machine calls; it has used its attempts and must be ended", got.Conclusion, len(e.m.calls))
+	}
+}
+
+func TestStoppingTheServerQueuesRunsInProgressAgainForTheNextStart(t *testing.T) {
 	e := newEnv(t)
 	e.m.hang = true
 	e.m.started = make(chan struct{})
@@ -375,13 +397,31 @@ func TestStoppingTheServerCancelsRunsInProgress(t *testing.T) {
 		t.Fatal("the job never reached a machine")
 	}
 	stop()
-	done := e.wait(t, run.ID)
-	if done.Conclusion != "cancelled" {
-		t.Fatalf("conclusion %q, want cancelled", done.Conclusion)
+	deadline := time.Now().Add(10 * time.Second)
+	var got store.Run
+	for time.Now().Before(deadline) {
+		got, _ = e.st.GetRun(context.Background(), run.ID)
+		if got.Status == store.RunQueued {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	jobs, _ := e.st.ListJobs(context.Background(), run.ID)
-	if len(jobs) != 1 || jobs[0].Status != store.RunCompleted {
-		t.Fatalf("jobs = %+v: a job of a cancelled run must be ended too", jobs)
+	if got.Status != store.RunQueued || got.Conclusion != "" {
+		t.Fatalf("run = %+v: stopped with the server, it must wait in the queue, not end as cancelled", got)
+	}
+	if jobs, _ := e.st.ListJobs(context.Background(), run.ID); len(jobs) != 0 {
+		t.Fatalf("jobs = %+v: the attempt that stopped leaves none behind", jobs)
+	}
+	// The next start runs it.
+	e.m.hang = false
+	e.m.handle = func(c call, out *wire.Encoder) (dispatch.Result, error) { return succeed(c, out) }
+	e2 := &Executor{Store: e.st, Source: e.src, Machine: e.m, Services: fakeServices{}, WorkDir: t.TempDir(), Poll: 10 * time.Millisecond}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); e2.Run(ctx) }()
+	defer func() { cancel(); <-done }()
+	if end := e.wait(t, run.ID); end.Conclusion != "success" || end.Attempts != 2 {
+		t.Fatalf("after the next start: %q, %d attempts", end.Conclusion, end.Attempts)
 	}
 }
 

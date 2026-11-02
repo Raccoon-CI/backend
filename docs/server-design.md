@@ -44,7 +44,7 @@ While the server is developed on a sandbox without an inbound address, the webho
 
 ## Engine and restarts
 
-`engine.Run` is a goroutine graph in memory. The first server version keeps it: one goroutine per run, instances sent out through `Options.Remote`, events stored as they come. If the server restarts, runs in progress are marked failed with the reason "server restarted" and their machines are deleted (machines have `deleteAfterSeconds`, so none leak). A database-driven scheduler that can resume a run is the second step and is only worth it when restarts during runs hurt. This also means the first version runs as a single instance.
+`engine.Run` is a goroutine graph in memory. The first server version keeps it: one goroutine per run, instances sent out through `Options.Remote`, events stored as they come. If the server is stopped (SIGTERM), each run in progress is cancelled, its machines are deleted, and the run goes back to the queue; if it dies (a crash, a kill), the runs left in progress are put back in the queue at the next start. Either way the run starts again **from the beginning**, with a warning in its log, and `runs.attempts` counts how often the executor took it: after 3 (`Executor.MaxAttempts`) it ends as failed, so a run that kills the server cannot loop for ever. Resuming in the middle (keeping the finished jobs) needs a database-driven scheduler and is only worth it when whole-run restarts hurt. After a crash the old attempt's machines are not known any more and live until their `deleteAfterSeconds` deadline. This also means the first version runs as a single instance.
 
 ## Storage
 
@@ -65,7 +65,7 @@ The frontend starts after step 2, when the API has runs and logs to show. Until 
 ## Decisions taken here, easy to change before step 1 is built
 
 - Go, one binary, SQLite first and PostgreSQL second.
-- Engine in process for the first version; runs interrupted by a restart are failed.
+- Engine in process for the first version; runs interrupted by a restart are queued again (up to 3 attempts).
 - GitHub App as the only way in (no polling in this path).
 - Documentation in two versions, English and Chinese, and the API described in English, because the repository will be open source.
 

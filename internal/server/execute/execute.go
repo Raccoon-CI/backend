@@ -75,6 +75,10 @@ type Executor struct {
 	// job instances of one run (default 8).
 	MaxRuns     int
 	MaxParallel int
+	// MaxAttempts is how many times a run may be taken: a run in progress when
+	// the server stopped (or being run when it is stopped) is queued again
+	// until it has been taken this often (default 3), then it ends as failed.
+	MaxAttempts int
 	// Install is what machines may install for a job (`raccoonci run -install`):
 	// "all" (default) also installs apt packages, which is fine on machines
 	// that exist for one job.
@@ -101,6 +105,13 @@ func (e *Executor) log() *slog.Logger {
 	return slog.New(slog.DiscardHandler)
 }
 
+func (e *Executor) maxAttempts() int {
+	if e.MaxAttempts < 1 {
+		return 3
+	}
+	return e.MaxAttempts
+}
+
 func (e *Executor) init() {
 	e.once.Do(func() { e.wake = make(chan struct{}, 1) })
 }
@@ -115,14 +126,16 @@ func (e *Executor) Wake() {
 }
 
 // Run takes queued runs until ctx ends, then waits for the runs it started to
-// finish (they are cancelled by ctx). It first ends the runs a stopped server
-// left in progress.
+// finish (they are cancelled by ctx and queued again, to be taken by the next
+// start). It first deals with the runs a stopped server left in progress: they
+// are queued again, unless they have been taken MaxAttempts times, when they
+// end as failed.
 func (e *Executor) Run(ctx context.Context) error {
 	e.init()
-	if n, err := e.Store.InterruptRuns(ctx, string(runner.Failure)); err != nil {
-		return fmt.Errorf("ending the runs left from before: %w", err)
-	} else if n > 0 {
-		e.log().Warn("runs were in progress when the server stopped; ended as failed", "runs", n)
+	if requeued, ended, err := e.Store.RequeueInterrupted(ctx, e.maxAttempts(), string(runner.Failure)); err != nil {
+		return fmt.Errorf("dealing with the runs left from before: %w", err)
+	} else if requeued+ended > 0 {
+		e.log().Warn("runs were in progress when the server stopped", "queued_again", requeued, "ended_as_failed", ended)
 	}
 	maxRuns := e.MaxRuns
 	if maxRuns < 1 {
@@ -188,6 +201,16 @@ func (e *Executor) execute(parent context.Context, run store.Run) {
 			conclusion = runner.Failure
 		}
 		sink.Close()
+		if conclusion == runner.Cancelled && parent.Err() != nil {
+			// The server is stopping, nobody cancelled this run: it goes back in
+			// the queue for the next start, and GitHub's status stays pending.
+			if ok, err := e.Store.Requeue(context.Background(), run.ID, e.maxAttempts()); err != nil {
+				log.Error("queuing a run again failed", "err", err)
+			} else if ok {
+				log.Info("run stopped with the server; queued again", "attempt", run.Attempts)
+				return
+			}
+		}
 		if err := e.Store.FinishRun(context.Background(), run.ID, string(conclusion)); err != nil {
 			log.Error("recording the end of a run failed", "err", err)
 		}
@@ -204,7 +227,11 @@ func (e *Executor) execute(parent context.Context, run store.Run) {
 		<-e.report(run, installation, state, desc, pending)
 		log.Info("run ended", "conclusion", conclusion)
 	}()
-	log.Info("run started")
+	log.Info("run started", "attempt", run.Attempts)
+	if run.Attempts > 1 {
+		sink.Add(runner.Event{Kind: runner.Warning, Time: time.Now(),
+			Text: fmt.Sprintf("the server stopped while this ran; it is started again from the beginning (attempt %d)", run.Attempts)})
+	}
 
 	x, err := e.prepare(ctx, run, sink)
 	if err != nil {

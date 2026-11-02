@@ -413,6 +413,7 @@ components:
         base_sha: {type: string}
         pull_request: {type: integer}
         rerun_of: {type: integer, description: "the run this repeats; absent for a run an event started"}
+        attempts: {type: integer, description: "how many times the server took the run; 2 or more means it was started again from the beginning after the server stopped; absent while queued for the first time"}
         fork: {type: boolean, description: "a pull request from another repository: no secrets"}
         actor: {type: string}
         status: {type: string, enum: [queued, in_progress, completed]}

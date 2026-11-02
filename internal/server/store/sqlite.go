@@ -210,14 +210,14 @@ func (s *SQLite) Repos(ctx context.Context) ([]RepoRef, error) {
 	return out, rows.Err()
 }
 
-const runColumns = `id, event_id, repo, workflow_path, workflow_name, event, ref, sha, base_sha, pull_request, fork, actor, inputs, rerun_of, status, conclusion, created_at, updated_at`
+const runColumns = `id, event_id, repo, workflow_path, workflow_name, event, ref, sha, base_sha, pull_request, fork, actor, inputs, rerun_of, status, conclusion, created_at, updated_at, attempts`
 
 func scanRun(r scanner, withText bool) (Run, error) {
 	var run Run
 	var fork int
 	var created, updated int64
 	dest := []any{&run.ID, &run.EventID, &run.Repo, &run.WorkflowPath, &run.WorkflowName, &run.Event, &run.Ref, &run.SHA, &run.BaseSHA,
-		&run.PullRequest, &fork, &run.Actor, &run.Inputs, &run.RerunOf, &run.Status, &run.Conclusion, &created, &updated}
+		&run.PullRequest, &fork, &run.Actor, &run.Inputs, &run.RerunOf, &run.Status, &run.Conclusion, &created, &updated, &run.Attempts}
 	if withText {
 		dest = append(dest, &run.WorkflowText)
 	}

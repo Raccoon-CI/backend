@@ -97,6 +97,10 @@ run 会在它所跑的提交上设置 commit status `raccoonci / <workflow 名>`
 
 InstaBox 限制一个组织每分钟起机的数量（Pro 套餐 10 台），超了回 429。`-starts-per-minute`（默认 10，0 表示自己不计数）让服务端用 62 秒的滑动窗口数自己的起机次数，超了的排队等，所以一阵 run 会被摊开而不是失败；收到 429 后所有起机停 20 秒，被拒的那一次再问（最多约 7 分钟）。日志里会写 `waited … for the machine start limit`。计数只是服务端自己的：同一个 InstaBox 组织里别人起的机器，只能靠 429 才知道。
 
+## 重启
+
+服务停止时正在进行的 run 会**从头重新开始**，不是接着跑：收到 SIGTERM 时每个进行中的 run 被取消（机器删掉，要几秒），然后回到队列；崩溃的话，下次启动时把还在进行中的 run 放回队列。run 的日志里会有一条警告（"the server stopped while this ran; it is started again … attempt N"），前一次尝试的日志行保留，这期间 GitHub 上的状态一直是 `pending`。一个 run 最多被取走 3 次，之后记为失败。被人取消的 run 仍是已取消。崩溃之后旧一次尝试的机器已经不知道是哪些，由 InstaBox 在 2 小时期限到时删掉。
+
 ## 缓存，以及对象放在哪里
 
 `actions/cache` 和 `setup-*` 的 `cache:` 选项都能用（v1 协议）。缓存不是所有人共用一份：每个 run 把缓存存进**它自己那个 ref 的空间**，恢复时从这个空间和**默认分支的空间**找。
@@ -136,5 +140,6 @@ DELETE /v1/storage?org=acme        # 回到服务端自己的存储
 - **真实 job 里的缓存，在 InstaBox 机器上**（`bench-go-integration`，`setup-go` 带 `cache: true`，还有一个 postgres 服务容器）：第一次没找到缓存，经服务端保存了 44 MB；重跑时恢复成功（"Cache restored from key …"、"Cache hit occurred on the primary key"）；在新分支上的 run 也恢复成功，走的是默认分支的空间；磁盘上只有默认分支的那一个空间；结束后没有残留机器。隔离规则有用多个 run 做的测试（功能分支、pull request 的 ref、另一个仓库、重启），去掉隔离后这些测试会失败。
 - **密钥：** 经隧道存了一个密钥和一个变量并列出（密钥只列名字），`read` token 读 run 得到 200、读密钥得到 403，被吊销的 token 立刻失效。用真正的 runner（`RACCOONCI_TEST_BIN=dist/raccoonci go test ./internal/server/execute -run Real`）：step 对密钥打印出 `token=[***]`，对变量打印出 `region=[eu]`，密钥的值在日志里任何地方都没有出现，fork 的 run 打印的 token 是空的。没在真实的、由 GitHub 触发且用到密钥的 workflow 上跑过（手头的 token 加不了 workflow 文件）。
 - **InstaBox 上的起机限额**（`-starts-per-minute 2`，同时启动 `bench-lint-docs` 的四个 run）：两台机器 9–11 秒就绪，另外两个分别等了 1 分 0.5 秒和 1 分 1.5 秒的限额才起机；四个 run 都成功，没有机器遗留。没有真的收到过 InstaBox 的 429（收到后重试只在假 API 上测过）。
+- **InstaBox 上的重启：**服务在 run 中途被杀（停的时候机器还在创建）后，下次启动把 run 重新排队，第 2 次尝试成功；run 进行中发 SIGTERM，服务约 15 秒后才退出（先删机器），日志写了 `queued again`，重启后 run 第 2 次尝试成功。两次都是 `bench-lint-docs`、run 开始后几秒就停；在长 run 的后段重启没试过。
 - **定时触发：**只有单测（时钟是传进去的）。手边没有带 `schedule:` 的仓库，令牌也加不了，所以没看到过真实触发。
 - **没试过：** 桶（没有给开发用 R2 桶的访问密钥，所以 artifact 和缓存走 S3 的路径以及桶的检查只用假的测过）、真实 job 上传 artifact、由 GitHub 发出的投递建出的 run、真实的 pull request、App 对真实 GitHub 的认证、真实 job 里的 artifact、带 matrix 的 run。

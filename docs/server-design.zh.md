@@ -44,7 +44,7 @@
 
 ## engine 与重启
 
-`engine.Run` 是内存里的 goroutine 图。服务端第一版保留这个设计：每个 run 一个 goroutine，实例通过 `Options.Remote` 发出去，事件边来边存。服务重启时，正在跑的 run 标记为失败，原因是"server restarted"，并删除它们的机器（机器带 `deleteAfterSeconds`，所以不会泄漏）。能中途恢复的、由数据库驱动的调度器是第二步，只有重启中断 run 真的造成困扰时才值得做。这也意味着第一版只以单实例运行。
+`engine.Run` 是内存里的 goroutine 图。服务端第一版保留这个设计：每个 run 一个 goroutine，实例通过 `Options.Remote` 发出去，事件边来边存。服务被停（SIGTERM）时，正在跑的 run 会被取消、机器删掉，然后 run 放回队列；如果服务是崩溃或被杀，下次启动时把还在"进行中"的 run 放回队列。两种情况下 run 都**从头重来**，日志里有一条警告，`runs.attempts` 记执行器取走它几次：到 3 次（`Executor.MaxAttempts`）就记为失败，所以一个会弄垮服务的 run 不会无限循环。从中间接着跑（保留已完成的 job）需要由数据库驱动的调度器，只有整个 run 重来真的造成困扰时才值得做。崩溃之后上一次的机器已经不知道是哪些，只能等它们的 `deleteAfterSeconds` 到期。这也意味着第一版只以单实例运行。
 
 ## 存储
 
@@ -65,7 +65,7 @@
 ## 这里先定下的决定，第 1 步写出来之前都容易改
 
 - Go，单个二进制，先 SQLite，再 PostgreSQL。
-- 第一版 engine 在进程内；被重启打断的 run 记为失败。
+- 第一版 engine 在进程内；被重启打断的 run 重新排队（最多 3 次）。
 - GitHub App 是唯一入口（这条路径不轮询）。
 - 文档和 API 用中英两个版本，因为仓库会开源。
 

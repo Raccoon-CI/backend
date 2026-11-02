@@ -328,6 +328,68 @@ func TestInterruptEndsWhatWasInProgress(t *testing.T) {
 	}
 }
 
+func TestClaimCountsAttemptsAndRequeueGivesUpAtTheLimit(t *testing.T) {
+	s, ctx := open(t), context.Background()
+	r := newRun(t, s, "w")
+	for attempt := 1; attempt <= 3; attempt++ {
+		got, ok, err := s.ClaimRun(ctx)
+		if err != nil || !ok || got.ID != r.ID || got.Attempts != attempt {
+			t.Fatalf("claim %d: %+v ok=%v err=%v", attempt, got, ok, err)
+		}
+		if _, err := s.StartJob(ctx, r.ID, "build"); err != nil {
+			t.Fatal(err)
+		}
+		again, err := s.Requeue(ctx, r.ID, 3)
+		if err != nil || again != (attempt < 3) {
+			t.Fatalf("requeue after attempt %d: %v %v", attempt, again, err)
+		}
+		if again {
+			if q, _ := s.GetRun(ctx, r.ID); q.Status != RunQueued {
+				t.Fatalf("run = %+v", q)
+			}
+			if jobs, _ := s.ListJobs(ctx, r.ID); len(jobs) != 0 {
+				t.Fatalf("jobs = %+v: the next attempt makes its own", jobs)
+			}
+		}
+	}
+	if ok, _ := s.Requeue(ctx, r.ID, 3); ok {
+		t.Fatal("a run that is not in progress cannot be queued again")
+	}
+}
+
+func TestRequeueInterruptedQueuesWhatCanRunAgainAndEndsTheRest(t *testing.T) {
+	s, ctx := open(t), context.Background()
+	fresh, tired := newRun(t, s, "fresh"), newRun(t, s, "tired")
+	s.ClaimRun(ctx) // fresh, attempt 1
+	s.ClaimRun(ctx) // tired, attempt 1
+	if ok, _ := s.Requeue(ctx, tired.ID, 5); !ok {
+		t.Fatal("setup")
+	}
+	s.ClaimRun(ctx) // tired, attempt 2: the only one queued
+	for _, id := range []int64{fresh.ID, tired.ID} {
+		if _, err := s.StartJob(ctx, id, "j"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	requeued, ended, err := s.RequeueInterrupted(ctx, 2, "failure")
+	if err != nil || requeued != 1 || ended != 1 {
+		t.Fatalf("requeued %d, ended %d, %v: want 1 and 1", requeued, ended, err)
+	}
+	if r, _ := s.GetRun(ctx, fresh.ID); r.Status != RunQueued {
+		t.Fatalf("fresh = %+v", r)
+	}
+	if jobs, _ := s.ListJobs(ctx, fresh.ID); len(jobs) != 0 {
+		t.Fatalf("jobs of a run queued again = %+v", jobs)
+	}
+	r, _ := s.GetRun(ctx, tired.ID)
+	if r.Status != RunCompleted || r.Conclusion != "failure" {
+		t.Fatalf("tired = %+v", r)
+	}
+	if jobs, _ := s.ListJobs(ctx, tired.ID); len(jobs) != 1 || jobs[0].Status != RunCompleted || jobs[0].Conclusion != "failure" {
+		t.Fatalf("jobs of a run that ended = %+v: they end with it", jobs)
+	}
+}
+
 func TestJobsAreRecordedPerRunAndRestartable(t *testing.T) {
 	s, ctx := open(t), context.Background()
 	r := newRun(t, s, "w")

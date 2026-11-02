@@ -10,7 +10,7 @@ import (
 // callers cannot both get it.
 func (s *SQLite) ClaimRun(ctx context.Context) (Run, bool, error) {
 	r, err := scanRun(s.db.QueryRowContext(ctx,
-		`UPDATE runs SET status = ?, updated_at = ?
+		`UPDATE runs SET status = ?, updated_at = ?, attempts = attempts + 1
 		 WHERE id = (SELECT id FROM runs WHERE status = ? ORDER BY id LIMIT 1)
 		 RETURNING `+runColumns+`, workflow_text`, RunInProgress, ms(s.Now()), RunQueued), true)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -66,6 +66,86 @@ func (s *SQLite) InterruptRuns(ctx context.Context, conclusion string) (int, err
 	}
 	n, _ := res.RowsAffected()
 	return int(n), tx.Commit()
+}
+
+// Requeue implements Store.
+func (s *SQLite) Requeue(ctx context.Context, id int64, maxAttempts int) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	ok, err := requeue(ctx, tx, id, maxAttempts, ms(s.Now()))
+	if err != nil || !ok {
+		return false, err
+	}
+	return true, tx.Commit()
+}
+
+// requeue moves one run in progress back to the queue; it reports false if the
+// run is not in progress or has used its attempts.
+func requeue(ctx context.Context, tx *sql.Tx, id int64, maxAttempts int, now int64) (bool, error) {
+	res, err := tx.ExecContext(ctx, `UPDATE runs SET status = ?, updated_at = ? WHERE id = ? AND status = ? AND attempts < ?`,
+		RunQueued, now, id, RunInProgress, maxAttempts)
+	if err != nil {
+		return false, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return false, nil
+	}
+	// The jobs are of the attempt that ended; the next one makes its own.
+	_, err = tx.ExecContext(ctx, `DELETE FROM jobs WHERE run_id = ?`, id)
+	return err == nil, err
+}
+
+// RequeueInterrupted implements Store.
+func (s *SQLite) RequeueInterrupted(ctx context.Context, maxAttempts int, conclusion string) (int, int, error) {
+	now := ms(s.Now())
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM runs WHERE status = ?`, RunInProgress)
+	if err != nil {
+		return 0, 0, err
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, 0, err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, 0, err
+	}
+	requeued := 0
+	for _, id := range ids {
+		ok, err := requeue(ctx, tx, id, maxAttempts, now)
+		if err != nil {
+			return 0, 0, err
+		}
+		if ok {
+			requeued++
+		}
+	}
+	// What could not be queued again ends as failed, with its jobs.
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE jobs SET status = ?, conclusion = ?, completed_at = ? WHERE status = ?`,
+		RunCompleted, conclusion, now, RunInProgress); err != nil {
+		return 0, 0, err
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE runs SET status = ?, conclusion = ?, updated_at = ? WHERE status = ?`,
+		RunCompleted, conclusion, now, RunInProgress)
+	if err != nil {
+		return 0, 0, err
+	}
+	n, _ := res.RowsAffected()
+	return requeued, int(n), tx.Commit()
 }
 
 const jobColumns = `id, run_id, name, status, conclusion, started_at, completed_at`
