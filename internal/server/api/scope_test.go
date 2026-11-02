@@ -1,0 +1,121 @@
+package api
+
+import (
+	"encoding/json"
+	"net/http"
+	"strings"
+	"testing"
+)
+
+// limited makes a read token limited to some repositories, through the API.
+func limited(t *testing.T, h http.Handler, repos ...string) string {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{"name": "dash", "role": "read", "repos": repos})
+	rec := call(h, "POST", "/v1/tokens", token, string(body))
+	var made struct {
+		Token string   `json:"token"`
+		Repos []string `json:"repos"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &made)
+	if rec.Code != 201 || made.Token == "" {
+		t.Fatalf("making the token: %d %s", rec.Code, rec.Body)
+	}
+	return made.Token
+}
+
+func repoNames(t *testing.T, rec interface{ Bytes() []byte }) []string {
+	t.Helper()
+	var out struct {
+		Runs []struct{ Repo string } `json:"runs"`
+	}
+	if err := json.Unmarshal(rec.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, r := range out.Runs {
+		names = append(names, r.Repo)
+	}
+	return names
+}
+
+func TestALimitedTokenSeesOnlyTheRunsOfItsRepositories(t *testing.T) {
+	_, h := setup(t) // runs 1 and 3 are acme/web, 2 is acme/api; event 1 is acme/web
+	api := limited(t, h, "Acme/API")
+
+	rec := call(h, "GET", "/v1/runs", api, "")
+	if names := repoNames(t, rec.Body); rec.Code != 200 || len(names) != 1 || names[0] != "acme/api" {
+		t.Fatalf("list: %d %v", rec.Code, names)
+	}
+	if rec := call(h, "GET", "/v1/runs?repo=acme/web", api, ""); rec.Code != 200 || len(repoNames(t, rec.Body)) != 0 {
+		t.Errorf("asking for another repository: %d %s", rec.Code, rec.Body)
+	}
+	for _, path := range []string{"/v1/runs/2", "/v1/runs/2/jobs", "/v1/runs/2/log"} {
+		if rec := call(h, "GET", path, api, ""); rec.Code != 200 {
+			t.Errorf("%s of its own repository: %d %s", path, rec.Code, rec.Body)
+		}
+	}
+	// Another repository's run does not exist as far as the token can tell:
+	// the same answer as for a run that is not there.
+	missing := call(h, "GET", "/v1/runs/999", api, "")
+	for _, path := range []string{"/v1/runs/1", "/v1/runs/1/jobs", "/v1/runs/1/log", "/v1/runs/1/artifacts", "/v1/runs/1/artifacts/1/download", "/v1/runs/3"} {
+		rec := call(h, "GET", path, api, "")
+		if rec.Code != 404 || rec.Body.String() != missing.Body.String() {
+			t.Errorf("%s of another repository: %d %s, want the answer for a missing run (%d %s)", path, rec.Code, rec.Body, missing.Code, missing.Body)
+		}
+	}
+	if rec := call(h, "GET", "/v1/events/1", api, ""); rec.Code != 404 {
+		t.Errorf("an event of another repository: %d", rec.Code)
+	}
+	// It stays a read token: nothing that changes something.
+	for _, c := range [][3]string{{"POST", "/v1/runs", `{}`}, {"POST", "/v1/runs/2/cancel", ``}, {"POST", "/v1/runs/2/rerun", ``}, {"GET", "/v1/tokens", ``}, {"GET", "/v1/secrets?scope=org:acme", ``}} {
+		if rec := call(h, c[0], c[1], api, c[2]); rec.Code != 403 {
+			t.Errorf("%s %s: %d, want 403", c[0], c[1], rec.Code)
+		}
+	}
+}
+
+func TestAnOwnerPatternCoversItsRepositoriesAndNoTokenSeesMoreThanItIsGiven(t *testing.T) {
+	_, h := setup(t)
+	acme := limited(t, h, "acme/*")
+	if names := repoNames(t, call(h, "GET", "/v1/runs", acme, "").Body); len(names) != 3 {
+		t.Errorf("acme/*: %v", names)
+	}
+	other := limited(t, h, "other/*")
+	if rec := call(h, "GET", "/v1/runs", other, ""); len(repoNames(t, rec.Body)) != 0 {
+		t.Errorf("other/*: %s", rec.Body)
+	}
+	if rec := call(h, "GET", "/v1/runs/1", other, ""); rec.Code != 404 {
+		t.Errorf("other/* reading acme's run: %d", rec.Code)
+	}
+	// A token with no list, and the bootstrap token, see everything.
+	free := call(h, "POST", "/v1/tokens", token, `{"name":"free","role":"read"}`)
+	var made struct{ Token string }
+	json.Unmarshal(free.Body.Bytes(), &made)
+	for _, tok := range []string{made.Token, token} {
+		if names := repoNames(t, call(h, "GET", "/v1/runs", tok, "").Body); len(names) != 3 {
+			t.Errorf("an unlimited token sees %v", names)
+		}
+	}
+}
+
+func TestOnlyAReadTokenCanBeLimitedAndThePatternsAreChecked(t *testing.T) {
+	_, h := setup(t)
+	for _, c := range []struct{ body, what string }{
+		{`{"name":"a","role":"admin","repos":["acme/web"]}`, "an admin limited to a repository"},
+		{`{"name":"a","role":"read","repos":["acme"]}`, "a name without an owner"},
+		{`{"name":"a","role":"read","repos":["*/web"]}`, "a wildcard owner"},
+		{`{"name":"a","role":"read","repos":["acme/web; drop"]}`, "a pattern with junk"},
+	} {
+		if rec := call(h, "POST", "/v1/tokens", token, c.body); rec.Code != 400 {
+			t.Errorf("%s: %d %s", c.what, rec.Code, rec.Body)
+		}
+	}
+	rec := call(h, "POST", "/v1/tokens", token, `{"name":"a","role":"read","repos":["Acme/Web","acme/web"]}`)
+	if rec.Code != 201 || !strings.Contains(rec.Body.String(), `"repos":["acme/web"]`) {
+		t.Errorf("repeats and case: %d %s", rec.Code, rec.Body)
+	}
+	// The list shows the limit, never the token.
+	if list := call(h, "GET", "/v1/tokens", token, ""); !strings.Contains(list.Body.String(), `"repos":["acme/web"]`) {
+		t.Errorf("listing: %s", list.Body)
+	}
+}

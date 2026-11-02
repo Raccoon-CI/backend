@@ -163,13 +163,19 @@ type APIToken struct {
 	CreatedAt  time.Time
 	LastUsedAt time.Time // zero until used
 	RevokedAt  time.Time // zero while it works
+	// Repos limits a token of the read role to these repositories (patterns
+	// owner/name or owner/*, lower case); empty means all of them.
+	Repos []string
 }
 
 // RunFilter selects runs, newest first.
 type RunFilter struct {
-	Repo   string // empty: any
-	Before int64  // only runs with a smaller id, for paging; 0: from the newest
-	Limit  int    // default 50
+	Repo string // empty: any
+	// Allow, if set, keeps only the runs of repositories these patterns cover
+	// (owner/name or owner/*, lower case: NormalizeRepoPatterns).
+	Allow  []string
+	Before int64 // only runs with a smaller id, for paging; 0: from the newest
+	Limit  int   // default 50
 }
 
 // Store is what the server keeps.
@@ -260,7 +266,7 @@ type Store interface {
 	GetDocument(ctx context.Context, name string) (Document, error)
 
 	// CreateToken records a token by the SHA-256 (hex) of its value.
-	CreateToken(ctx context.Context, name, role, hash string) (APIToken, error)
+	CreateToken(ctx context.Context, name, role, hash string, repos []string) (APIToken, error)
 	// LookupToken finds a token that has not been revoked and notes its use.
 	LookupToken(ctx context.Context, hash string) (APIToken, error)
 	ListTokens(ctx context.Context) ([]APIToken, error)

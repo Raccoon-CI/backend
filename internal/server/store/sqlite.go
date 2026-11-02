@@ -284,6 +284,19 @@ func (s *SQLite) ListRuns(ctx context.Context, f RunFilter) ([]Run, error) {
 		where = append(where, `id < ?`)
 		args = append(args, f.Before)
 	}
+	if len(f.Allow) > 0 {
+		var or []string
+		for _, p := range f.Allow {
+			if owner, ok := strings.CutSuffix(p, "/*"); ok {
+				or = append(or, `lower(repo) LIKE ? ESCAPE '\'`)
+				args = append(args, likeEscape(owner)+"/%")
+			} else {
+				or = append(or, `lower(repo) = ?`)
+				args = append(args, p)
+			}
+		}
+		where = append(where, `(`+strings.Join(or, ` OR `)+`)`)
+	}
 	if len(where) > 0 {
 		q += ` WHERE ` + strings.Join(where, ` AND `)
 	}

@@ -124,10 +124,12 @@ type tokenJSON struct {
 	CreatedAt  time.Time  `json:"created_at"`
 	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
 	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
+	// Repos are the repositories a read token is limited to; absent for all.
+	Repos []string `json:"repos,omitempty"`
 }
 
 func toToken(t store.APIToken) tokenJSON {
-	return tokenJSON{ID: t.ID, Name: t.Name, Role: t.Role, CreatedAt: t.CreatedAt, LastUsedAt: timePtr(t.LastUsedAt), RevokedAt: timePtr(t.RevokedAt)}
+	return tokenJSON{ID: t.ID, Name: t.Name, Role: t.Role, CreatedAt: t.CreatedAt, LastUsedAt: timePtr(t.LastUsedAt), RevokedAt: timePtr(t.RevokedAt), Repos: t.Repos}
 }
 
 func (a *API) listTokens(w http.ResponseWriter, r *http.Request) {
@@ -146,8 +148,9 @@ func (a *API) listTokens(w http.ResponseWriter, r *http.Request) {
 // createToken makes a token and shows it once: only its hash is kept.
 func (a *API) createToken(w http.ResponseWriter, r *http.Request) {
 	var b struct {
-		Name string `json:"name"`
-		Role string `json:"role"`
+		Name  string   `json:"name"`
+		Role  string   `json:"role"`
+		Repos []string `json:"repos"`
 	}
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10))
 	dec.DisallowUnknownFields()
@@ -159,13 +162,27 @@ func (a *API) createToken(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "the role is read or admin")
 		return
 	}
+	var repos []string
+	if len(b.Repos) > 0 {
+		if b.Role != store.RoleRead {
+			// An admin changes things everywhere (secrets, tokens), which a
+			// repository list could not honestly limit.
+			fail(w, http.StatusBadRequest, "only a token of the read role can be limited to repositories")
+			return
+		}
+		var ok bool
+		if repos, ok = store.NormalizeRepoPatterns(b.Repos); !ok || len(repos) > 100 {
+			fail(w, http.StatusBadRequest, "repos are owner/name or owner/* (at most 100)")
+			return
+		}
+	}
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
 		fail(w, http.StatusInternalServerError, "could not make a token")
 		return
 	}
 	token := "rct_" + base64.RawURLEncoding.EncodeToString(raw)
-	t, err := a.Store.CreateToken(r.Context(), strings.TrimSpace(b.Name), b.Role, HashToken(token))
+	t, err := a.Store.CreateToken(r.Context(), strings.TrimSpace(b.Name), b.Role, HashToken(token), repos)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "could not keep the token")
 		return

@@ -248,7 +248,9 @@ paths:
                     items: {$ref: "#/components/schemas/Token"}
     post:
       summary: Make a token
-      description: The token is in the answer once; only a hash of it is kept. `read` can read runs, jobs, logs and events; `admin` can also change anything and manage secrets and tokens.
+      description: |
+        The token is in the answer once; only a hash of it is kept. `read` can read runs, jobs, logs, artifacts and events; `admin` can also change anything and manage secrets and tokens.
+        A `read` token can be limited with `repos` (`owner/name` or `owner/*`, not case sensitive, at most 100): it then sees only the runs and events of those repositories. A run or event of another repository answers 404, the same as one that does not exist, and the list leaves them out. A limited token cannot use any other route (403). An `admin` token cannot be limited (400).
       requestBody:
         required: true
         content:
@@ -259,6 +261,10 @@ paths:
               properties:
                 name: {type: string}
                 role: {type: string, enum: [read, admin]}
+                repos:
+                  type: array
+                  items: {type: string, example: "acme/*"}
+                  description: the repositories a read token is limited to; omit for all
       responses:
         "201":
           description: the token, shown once
@@ -475,6 +481,7 @@ components:
         id: {type: integer}
         name: {type: string}
         role: {type: string, enum: [read, admin]}
+        repos: {type: array, items: {type: string}, description: "the repositories a read token is limited to; absent for all"}
         created_at: {type: string, format: date-time}
         last_used_at: {type: string, format: date-time}
         revoked_at: {type: string, format: date-time}

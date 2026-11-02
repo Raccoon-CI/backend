@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -66,13 +67,17 @@ func (s *SQLite) DeleteSecret(ctx context.Context, scope, name string) (bool, er
 	return n == 1, nil
 }
 
-const tokenColumns = `id, name, role, created_at, last_used_at, revoked_at`
+const tokenColumns = `id, name, role, created_at, last_used_at, revoked_at, repos`
 
 func scanToken(r scanner) (APIToken, error) {
 	var t APIToken
 	var created, used, revoked int64
-	if err := r.Scan(&t.ID, &t.Name, &t.Role, &created, &used, &revoked); err != nil {
+	var repos string
+	if err := r.Scan(&t.ID, &t.Name, &t.Role, &created, &used, &revoked, &repos); err != nil {
 		return APIToken{}, err
+	}
+	if repos != "" {
+		t.Repos = strings.Split(repos, ",")
 	}
 	t.CreatedAt = fromMS(created)
 	if used != 0 {
@@ -85,10 +90,10 @@ func scanToken(r scanner) (APIToken, error) {
 }
 
 // CreateToken implements Store.
-func (s *SQLite) CreateToken(ctx context.Context, name, role, hash string) (APIToken, error) {
+func (s *SQLite) CreateToken(ctx context.Context, name, role, hash string, repos []string) (APIToken, error) {
 	return scanToken(s.db.QueryRowContext(ctx,
-		`INSERT INTO api_tokens (name, role, hash, created_at) VALUES (?, ?, ?, ?) RETURNING `+tokenColumns,
-		name, role, hash, ms(s.Now())))
+		`INSERT INTO api_tokens (name, role, hash, created_at, repos) VALUES (?, ?, ?, ?, ?) RETURNING `+tokenColumns,
+		name, role, hash, ms(s.Now()), strings.Join(repos, ",")))
 }
 
 // usedEvery is how often a token's last use is written: a busy client should

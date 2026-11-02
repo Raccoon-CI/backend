@@ -247,11 +247,11 @@ func TestTokensAreFoundByHashUntilRevoked(t *testing.T) {
 	s, ctx := open(t), context.Background()
 	now := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
 	s.Now = func() time.Time { return now }
-	made, err := s.CreateToken(ctx, "ci bot", RoleRead, "aaa")
+	made, err := s.CreateToken(ctx, "ci bot", RoleRead, "aaa", nil)
 	if err != nil || made.Role != RoleRead || made.Name != "ci bot" || !made.LastUsedAt.IsZero() {
 		t.Fatalf("made = %+v, %v", made, err)
 	}
-	if _, err := s.CreateToken(ctx, "again", RoleAdmin, "aaa"); err == nil {
+	if _, err := s.CreateToken(ctx, "again", RoleAdmin, "aaa", nil); err == nil {
 		t.Fatal("two tokens with one hash")
 	}
 	found, err := s.LookupToken(ctx, "aaa")

@@ -77,7 +77,8 @@ GET    /v1/tokens    DELETE /v1/tokens/{id}                                     
 - run 只拿到 workflow 里按字面写出的密钥（`secrets.NAME`、`secrets['NAME']`），同名时仓库的优先于组织的。通过拼出来的名字、或把整个 `secrets` 传下去才能读到的密钥不会发送。名字统一存成大写；不允许以 `GITHUB_` 开头。
 - 来自别的仓库（或 fork 已被删除）的 pull request 的 run **拿不到任何密钥**，日志里会写明。变量还是能拿到。
 - `read` token 能读 run、job、日志和事件；`admin` token 还能启动、取消、重跑 run，管理密钥、变量和 token。token 只保存哈希。
-- `GITHUB_TOKEN`（`secrets.GITHUB_TOKEN`、`github.token`）**只有用 GitHub App 时**由服务端生成（`-job-token`，默认开）：每个 job 实例拿到一个自己的 installation token，只对这个 run 的仓库有效，job 一结束就吊销（最迟一小时过期）。权限取 job 的 `permissions:`，没有就取 workflow 的，再没有就用服务端的默认——**只读 contents**（GitHub 自己的默认可能是读写）；写成映射的只给点名的，其余为 none，`read-all`/`write-all` 可用，App token 不可能有的名字（`id-token` 等）会被丢掉。App 没有 job 要的权限时，job 拿默认权限的 token，日志里有警告；一个 token 都做不出来时 job 不带 token 运行，同样有警告。fork 的 pull request 拿不到，和它拿不到密钥一致。普通 token（`RACCOONCI_GITHUB_TOKEN`）绝不会传给 job。这个名字的密钥不能存。还没对真实 GitHub 试过：App 没注册。
+- `read` token 可以限定到某些仓库：`POST /v1/tokens {"name":"acme-dashboard","role":"read","repos":["acme/*","other/web"]}`（`owner/name` 或 `owner/*`，不分大小写）。这样的 token 只能看到这些仓库的 run 和事件：列表里没有别的仓库的，别的仓库的 run 或事件回 404，和不存在的一模一样。它不能用其他任何路由（403），以后新加的路由在决定之前对它是关闭的。`admin` token 不能限定（400），因为它到处都能改东西。引导 token 和没写 `repos` 的 token 看得到全部。
+- `GITHUB_TOKEN`（`secrets.GITHUB_TOKEN`、`github.token`）**只有用 GitHub App 时**由服务端生成（`-job-token`，默认开）：每个 job 实例拿到一个自己的 installation token，只对这个 run 的仓库有效，job 一结束就吊销（最迟一小时过期）。权限取 job 的 `permissions:`，没有就取 workflow 的，再没有就用服务端的默认——**只读 contents**（GitHub 自己的默认可能是读写）；写成映射的只给点名的，其余为 none，`read-all`/`write-all` 可用，App token 不可能有的名字（`id-token` 等）会被丢掉。App 没有 job 要的权限时，job 拿默认权限的 token，日志里有警告；一个 token 都做不出来时 job 不带 token 运行，同样有警告。fork 的 pull request 拿不到，和它拿不到密钥一致。普通 token（`RACCOONCI_GITHUB_TOKEN`）绝不会传给 job。这个名字的密钥不能存。已用开发 App 对真实 GitHub 验证过（见"目前验证过的"）；机器上的 step 真的用这个 token 还没试过。
 
 ## GitHub 上的状态
 

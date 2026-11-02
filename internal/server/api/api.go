@@ -155,25 +155,79 @@ func HashToken(token string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// roleOf says which role a bearer token has: the bootstrap token is admin
-// (compared by hash, so it takes the same time whatever the guess), others are
-// looked up by hash among the tokens kept. "" means none.
-func (a *API) roleOf(ctx context.Context, given string) string {
+// principalOf says which role a bearer token has and, for a read token limited
+// to some repositories, which: the bootstrap token is admin (compared by hash,
+// so it takes the same time whatever the guess), others are looked up by hash
+// among the tokens kept. A role of "" means none.
+func (a *API) principalOf(ctx context.Context, given string) (role string, repos []string) {
 	if given == "" {
-		return ""
+		return "", nil
 	}
 	if a.Token != "" {
 		want, have := sha256.Sum256([]byte(a.Token)), sha256.Sum256([]byte(given))
 		if subtle.ConstantTimeCompare(want[:], have[:]) == 1 {
-			return store.RoleAdmin
+			return store.RoleAdmin, nil
 		}
 	}
 	if a.Store != nil {
 		if t, err := a.Store.LookupToken(ctx, HashToken(given)); err == nil {
-			return t.Role
+			return t.Role, t.Repos
 		}
 	}
-	return ""
+	return "", nil
+}
+
+// scopeKey carries a limited token's repository patterns to the handlers.
+type scopeKey struct{}
+
+// scopeOf returns the patterns the caller is limited to; none means all.
+func scopeOf(ctx context.Context) []string {
+	s, _ := ctx.Value(scopeKey{}).([]string)
+	return s
+}
+
+// inScope enforces a repository-limited token on the routes it may use: it
+// answers 404 (not 403, which would say the thing exists) for a run or event of
+// another repository, and refuses every route this list does not know, so a
+// route added later is closed to limited tokens until someone decides.
+func (a *API) inScope(w http.ResponseWriter, r *http.Request, repos []string) bool {
+	pattern := strings.TrimPrefix(r.Pattern, "GET ")
+	switch {
+	case pattern == "/v1/runs":
+		return true // listRuns applies the list itself
+	case strings.HasPrefix(pattern, "/v1/runs/{id}") && r.Method == http.MethodGet:
+		id, ok := pathID(w, r)
+		if !ok {
+			return false
+		}
+		run, err := a.Store.GetRun(r.Context(), id)
+		if err != nil || !store.RepoAllowed(repos, run.Repo) {
+			if err != nil && !errors.Is(err, store.ErrNotFound) {
+				fail(w, http.StatusInternalServerError, "could not read the run")
+				return false
+			}
+			fail(w, http.StatusNotFound, "no such run")
+			return false
+		}
+		return true
+	case strings.HasPrefix(pattern, "/v1/events/{id}"):
+		id, ok := pathID(w, r)
+		if !ok {
+			return false
+		}
+		ev, err := a.Store.GetEvent(r.Context(), id)
+		if err != nil || !store.RepoAllowed(repos, ev.Repo) {
+			if err != nil && !errors.Is(err, store.ErrNotFound) {
+				fail(w, http.StatusInternalServerError, "could not read the event")
+				return false
+			}
+			fail(w, http.StatusNotFound, "no such event")
+			return false
+		}
+		return true
+	}
+	fail(w, http.StatusForbidden, "this token is limited to some repositories and cannot use this route")
+	return false
 }
 
 // auth wraps a route with the bearer token check for the access it needs.
@@ -187,13 +241,17 @@ func (a *API) auth(need access, next http.HandlerFunc) http.HandlerFunc {
 		if !ok {
 			given = "" // a token without the scheme is not accepted
 		}
-		role := a.roleOf(r.Context(), given)
+		role, repos := a.principalOf(r.Context(), given)
 		switch {
 		case role == "":
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			fail(w, http.StatusUnauthorized, "missing or wrong token")
 		case need == admin && role != store.RoleAdmin:
 			fail(w, http.StatusForbidden, "this needs a token of the admin role")
+		case len(repos) > 0:
+			if a.inScope(w, r, repos) {
+				next(w, r.WithContext(context.WithValue(r.Context(), scopeKey{}, repos)))
+			}
 		default:
 			next(w, r)
 		}
@@ -232,7 +290,7 @@ func toRun(r store.Run) runJSON {
 
 func (a *API) listRuns(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	f := store.RunFilter{Repo: q.Get("repo"), Limit: defaultLimit}
+	f := store.RunFilter{Repo: q.Get("repo"), Limit: defaultLimit, Allow: scopeOf(r.Context())}
 	if v := q.Get("limit"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 || n > maxLimit {
