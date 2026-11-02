@@ -18,11 +18,11 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Raccoon-CI/raccoonci/internal/blob"
 	"github.com/Raccoon-CI/raccoonci/internal/server/secrets"
 	"github.com/Raccoon-CI/raccoonci/internal/server/storagecheck"
 	"github.com/Raccoon-CI/raccoonci/internal/server/store"
 	"github.com/Raccoon-CI/raccoonci/internal/server/vault"
+	"github.com/Raccoon-CI/raccoonci/pkg/blob"
 )
 
 // settingName is the name the settings are kept under: the `$` cannot be in a

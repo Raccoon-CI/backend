@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/Raccoon-CI/raccoonci/internal/archive"
+	"github.com/Raccoon-CI/raccoonci/pkg/archive"
 	"github.com/Raccoon-CI/raccoonci/pkg/dispatch"
 )
 

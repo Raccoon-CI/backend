@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Raccoon-CI/raccoonci/internal/blob"
 	"github.com/Raccoon-CI/raccoonci/internal/server/secrets"
 	"github.com/Raccoon-CI/raccoonci/internal/server/store"
 	"github.com/Raccoon-CI/raccoonci/internal/server/vault"
+	"github.com/Raccoon-CI/raccoonci/pkg/blob"
 )
 
 type env struct {

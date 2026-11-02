@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Raccoon-CI/raccoonci/internal/blob"
 	"github.com/Raccoon-CI/raccoonci/internal/server/store"
+	"github.com/Raccoon-CI/raccoonci/pkg/blob"
 )
 
 // A server over a database, reachable through a real listener so that the

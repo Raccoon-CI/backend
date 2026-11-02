@@ -19,9 +19,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Raccoon-CI/raccoonci/internal/blob"
-	"github.com/Raccoon-CI/raccoonci/internal/instabox"
-	"github.com/Raccoon-CI/raccoonci/internal/runnerimages"
 	"github.com/Raccoon-CI/raccoonci/internal/server/api"
 	"github.com/Raccoon-CI/raccoonci/internal/server/artifacts"
 	"github.com/Raccoon-CI/raccoonci/internal/server/auth"
@@ -39,7 +36,10 @@ import (
 	"github.com/Raccoon-CI/raccoonci/internal/server/storage"
 	"github.com/Raccoon-CI/raccoonci/internal/server/store"
 	"github.com/Raccoon-CI/raccoonci/internal/server/vault"
+	"github.com/Raccoon-CI/raccoonci/pkg/blob"
 	"github.com/Raccoon-CI/raccoonci/pkg/dispatch"
+	"github.com/Raccoon-CI/raccoonci/pkg/instabox"
+	"github.com/Raccoon-CI/raccoonci/pkg/runnerimages"
 )
 
 // version is set at build time via -ldflags "-X main.version=...".

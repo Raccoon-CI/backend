@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Raccoon-CI/raccoonci/internal/blob"
+	"github.com/Raccoon-CI/raccoonci/pkg/blob"
 )
 
 // Check runs the checks on store. publicProbes are plain addresses of the

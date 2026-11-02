@@ -28,9 +28,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Raccoon-CI/raccoonci/internal/artifact"
-	"github.com/Raccoon-CI/raccoonci/internal/blob"
 	"github.com/Raccoon-CI/raccoonci/internal/server/store"
+	"github.com/Raccoon-CI/raccoonci/pkg/artifact"
+	"github.com/Raccoon-CI/raccoonci/pkg/blob"
 )
 
 // Records is what the service needs of the database (store.Store).

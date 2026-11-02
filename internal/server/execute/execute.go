@@ -27,7 +27,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/Raccoon-CI/raccoonci/internal/runnerimages"
 	"github.com/Raccoon-CI/raccoonci/internal/server/github"
 	"github.com/Raccoon-CI/raccoonci/internal/server/secrets"
 	"github.com/Raccoon-CI/raccoonci/internal/server/store"
@@ -35,6 +34,7 @@ import (
 	"github.com/Raccoon-CI/raccoonci/pkg/dispatch"
 	"github.com/Raccoon-CI/raccoonci/pkg/jobgraph"
 	"github.com/Raccoon-CI/raccoonci/pkg/runevent"
+	"github.com/Raccoon-CI/raccoonci/pkg/runnerimages"
 	"github.com/Raccoon-CI/raccoonci/pkg/value"
 	"github.com/Raccoon-CI/raccoonci/pkg/wire"
 	"github.com/Raccoon-CI/raccoonci/pkg/workflow"

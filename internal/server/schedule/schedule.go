@@ -24,9 +24,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Raccoon-CI/raccoonci/internal/cron"
 	"github.com/Raccoon-CI/raccoonci/internal/server/github"
 	"github.com/Raccoon-CI/raccoonci/internal/server/store"
+	"github.com/Raccoon-CI/raccoonci/pkg/cron"
 	"github.com/Raccoon-CI/raccoonci/pkg/trigger"
 	"github.com/Raccoon-CI/raccoonci/pkg/workflow"
 )

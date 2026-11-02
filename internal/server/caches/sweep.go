@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Raccoon-CI/raccoonci/internal/cache"
+	"github.com/Raccoon-CI/raccoonci/pkg/cache"
 )
 
 // DefaultMaxAge is how long an entry may go unused before it is deleted: seven
