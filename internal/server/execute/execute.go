@@ -29,8 +29,8 @@ import (
 
 	"raccoonci/internal/catalog"
 	"raccoonci/internal/dispatch"
-	"raccoonci/internal/engine"
-	"raccoonci/internal/runner"
+	"raccoonci/internal/jobgraph"
+	"raccoonci/internal/runevent"
 	"raccoonci/internal/runnerimages"
 	"raccoonci/internal/server/github"
 	"raccoonci/internal/server/secrets"
@@ -206,7 +206,7 @@ func (e *Executor) Wake() {
 // end as failed.
 func (e *Executor) Run(ctx context.Context) error {
 	e.init()
-	if requeued, ended, err := e.Store.RequeueInterrupted(ctx, e.maxAttempts(), string(runner.Failure)); err != nil {
+	if requeued, ended, err := e.Store.RequeueInterrupted(ctx, e.maxAttempts(), string(runevent.Failure)); err != nil {
 		return fmt.Errorf("dealing with the runs left from before: %w", err)
 	} else if requeued+ended > 0 {
 		e.log().Warn("runs were in progress when the server stopped", "queued_again", requeued, "ended_as_failed", ended)
@@ -273,7 +273,7 @@ func (e *Executor) execute(parent context.Context, run store.Run) {
 	e.register(run.ID, cancel)
 	defer e.unregister(run.ID)
 	began := time.Now()
-	conclusion := runner.Failure
+	conclusion := runevent.Failure
 	var used *atomic.Int64 // the machine time of this run, once it has an execution
 	var installation int64
 	if ev, err := e.Store.GetEvent(ctx, run.EventID); err == nil {
@@ -283,11 +283,11 @@ func (e *Executor) execute(parent context.Context, run store.Run) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Error("a run panicked", "panic", fmt.Sprint(r))
-			sink.Add(runner.Event{Kind: runner.Error, Time: time.Now(), Text: fmt.Sprintf("the server failed while running this: %v", r)})
-			conclusion = runner.Failure
+			sink.Add(runevent.Event{Kind: runevent.Error, Time: time.Now(), Text: fmt.Sprintf("the server failed while running this: %v", r)})
+			conclusion = runevent.Failure
 		}
 		sink.Close()
-		if conclusion == runner.Cancelled && parent.Err() != nil {
+		if conclusion == runevent.Cancelled && parent.Err() != nil {
 			// The server is stopping, nobody cancelled this run: it goes back in
 			// the queue for the next start, and GitHub's status stays pending.
 			if ok, err := e.Store.Requeue(context.Background(), run.ID, e.maxAttempts()); err != nil {
@@ -310,9 +310,9 @@ func (e *Executor) execute(parent context.Context, run store.Run) {
 		state, desc := github.StateFailure, "Failed"
 		took := time.Since(began).Round(time.Second)
 		switch conclusion {
-		case runner.Success:
+		case runevent.Success:
 			state, desc = github.StateSuccess, fmt.Sprintf("Succeeded in %v", took)
-		case runner.Cancelled:
+		case runevent.Cancelled:
 			state, desc = github.StateError, "Cancelled"
 		default:
 			desc = fmt.Sprintf("Failed after %v", took)
@@ -322,12 +322,12 @@ func (e *Executor) execute(parent context.Context, run store.Run) {
 	}()
 	log.Info("run started", "attempt", run.Attempts)
 	if run.Attempts > 1 {
-		sink.Add(runner.Event{Kind: runner.Warning, Time: time.Now(),
+		sink.Add(runevent.Event{Kind: runevent.Warning, Time: time.Now(),
 			Text: fmt.Sprintf("the server stopped while this ran; it is started again from the beginning (attempt %d)", run.Attempts)})
 	}
 
 	if why := e.overQuota(ctx, run.Repo); why != "" {
-		sink.Add(runner.Event{Kind: runner.Error, Time: time.Now(), Text: why})
+		sink.Add(runevent.Event{Kind: runevent.Error, Time: time.Now(), Text: why})
 		return
 	}
 
@@ -337,13 +337,13 @@ func (e *Executor) execute(parent context.Context, run store.Run) {
 	}
 	if err != nil {
 		if errors.Is(err, errSuperseded) {
-			sink.Add(runner.Event{Kind: runner.Notice, Time: time.Now(), Text: err.Error()})
-			conclusion = runner.Cancelled
+			sink.Add(runevent.Event{Kind: runevent.Notice, Time: time.Now(), Text: err.Error()})
+			conclusion = runevent.Cancelled
 			return
 		}
-		sink.Add(runner.Event{Kind: runner.Error, Time: time.Now(), Text: err.Error()})
+		sink.Add(runevent.Event{Kind: runevent.Error, Time: time.Now(), Text: err.Error()})
 		if ctx.Err() != nil {
-			conclusion = runner.Cancelled
+			conclusion = runevent.Cancelled
 		}
 		return
 	}
@@ -352,22 +352,20 @@ func (e *Executor) execute(parent context.Context, run store.Run) {
 		defer x.release()
 	}
 
-	res, err := engine.Run(ctx, x.w, engine.Options{
+	res, err := jobgraph.Run(ctx, x.w, jobgraph.Options{
 		Remote:      x.runInstance,
 		Github:      x.github,
 		Vars:        x.vars,
 		Inputs:      x.inputs,
-		Images:      x.images,
 		Catalog:     catalog.Default(),
-		WorkDir:     x.dir,
 		MaxParallel: x.maxParallel,
-		Runner:      runner.Config{OnEvent: sink.Add},
+		OnEvent:     sink.Add,
 	})
 	switch {
 	case err != nil:
-		sink.Add(runner.Event{Kind: runner.Error, Time: time.Now(), Text: err.Error()})
+		sink.Add(runevent.Event{Kind: runevent.Error, Time: time.Now(), Text: err.Error()})
 	case ctx.Err() != nil:
-		conclusion = runner.Cancelled
+		conclusion = runevent.Cancelled
 	default:
 		conclusion = res.Conclusion
 	}
@@ -517,10 +515,10 @@ func (e *Executor) prepare(ctx context.Context, run store.Run, sink *sink) (_ *e
 			vars = append(vars, value.Field{Key: k, Value: r.Vars[k]})
 		}
 		for _, w := range r.Warnings {
-			sink.Add(runner.Event{Kind: runner.Warning, Time: time.Now(), Text: w})
+			sink.Add(runevent.Event{Kind: runevent.Warning, Time: time.Now(), Text: w})
 		}
 		if run.Fork {
-			sink.Add(runner.Event{Kind: runner.Notice, Time: time.Now(), Text: "this run is for a pull request from another repository: it gets no secrets"})
+			sink.Add(runevent.Event{Kind: runevent.Notice, Time: time.Now(), Text: "this run is for a pull request from another repository: it gets no secrets"})
 		}
 	}
 	number, attempt, err := e.Store.RunNumbers(ctx, run)
@@ -579,7 +577,7 @@ func (e *Executor) prepare(ctx context.Context, run store.Run, sink *sink) (_ *e
 		if err == nil {
 			what = ref
 		} else if ctx.Err() == nil {
-			sink.Add(runner.Event{Kind: runner.Warning, Time: time.Now(),
+			sink.Add(runevent.Event{Kind: runevent.Warning, Time: time.Now(),
 				Text: fmt.Sprintf("the merge of this pull request could not be fetched (%v): running its head commit %s instead", err, run.SHA[:min(7, len(run.SHA))])})
 			err = nil
 		}
@@ -654,9 +652,9 @@ func parseObject(s string) (value.Object, error) {
 	return o, nil
 }
 
-// runInstance is engine.Options.Remote: it sends one job instance to a
+// runInstance is jobgraph.Options.Remote: it sends one job instance to a
 // machine, stores what the machine says, and returns how it ended.
-func (x *execution) runInstance(ctx context.Context, inst engine.RemoteInstance) (runner.Result, error) {
+func (x *execution) runInstance(ctx context.Context, inst jobgraph.RemoteInstance) (runevent.Result, error) {
 	// A job's own `concurrency:` is entered before the job starts, so a job
 	// that waits has no row, check run or machine yet. jobCtx is cancelled
 	// when a newer job of the group takes this one's place.
@@ -664,31 +662,31 @@ func (x *execution) runInstance(ctx context.Context, inst engine.RemoteInstance)
 	defer cancelJob()
 	group, cancelRunning, err := jobConcurrencyOf(jobInstance{inst.Job.Concurrency, inst.Needs, inst.Strategy, inst.Matrix}, x)
 	if err != nil {
-		return runner.Result{}, err
+		return runevent.Result{}, err
 	}
 	if group != "" {
 		self := holder{id: x.e.holderSeq.Add(1), desc: fmt.Sprintf("job %s of run %d", inst.Name, x.run.ID), cancel: cancelJob}
 		release, err := x.e.enterGroup(ctx, groupKey("job", x.run.Repo, group), group, self, cancelRunning, false, x.sink)
 		switch {
 		case errors.Is(err, errSuperseded):
-			x.sink.Add(runner.Event{Kind: runner.Notice, Time: time.Now(), Job: inst.Name, Text: err.Error()})
-			return runner.Result{Conclusion: runner.Cancelled}, nil
+			x.sink.Add(runevent.Event{Kind: runevent.Notice, Time: time.Now(), Job: inst.Name, Text: err.Error()})
+			return runevent.Result{Conclusion: runevent.Cancelled}, nil
 		case err != nil:
-			return runner.Result{}, err
+			return runevent.Result{}, err
 		}
 		defer release()
 	}
 	job, err := x.e.Store.StartJob(ctx, x.run.ID, inst.Name)
 	if err != nil {
-		return runner.Result{}, err
+		return runevent.Result{}, err
 	}
-	conclusion := runner.Failure
+	conclusion := runevent.Failure
 	check := x.startCheck(inst.Name)
 	notes := &annotations{} // what the steps reported, for the check run
 	var jobSummary string   // $GITHUB_STEP_SUMMARY, for the check run
 	defer func() {
 		if ctx.Err() != nil {
-			check.finish(runner.Cancelled, jobSummary, notes)
+			check.finish(runevent.Cancelled, jobSummary, notes)
 		} else {
 			check.finish(conclusion, jobSummary, notes)
 		}
@@ -706,7 +704,7 @@ func (x *execution) runInstance(ctx context.Context, inst engine.RemoteInstance)
 		{Key: "vars", Value: x.vars},
 	})
 	if err != nil {
-		return runner.Result{}, err
+		return runevent.Result{}, err
 	}
 	n := x.n.Add(1)
 	// The service token's job id is unique per instance (a matrix has many
@@ -714,7 +712,7 @@ func (x *execution) runInstance(ctx context.Context, inst engine.RemoteInstance)
 	var svcEnv map[string]string
 	if x.e.Services != nil {
 		if svcEnv, err = x.e.Services.JobEnv(x.run.ID, fmt.Sprintf("%s-%d", inst.Job.ID, n)); err != nil {
-			return runner.Result{}, err
+			return runevent.Result{}, err
 		}
 	}
 	// Only a job that asks for `id-token: write` can ask for ID tokens, and
@@ -731,9 +729,9 @@ func (x *execution) runInstance(ctx context.Context, inst engine.RemoteInstance)
 	}
 	input, err := json.Marshal(wire.InstanceSpec{Protocol: wire.Version, Workflow: x.run.WorkflowPath, Job: inst.Job.ID, Contexts: contexts, ServiceEnv: svcEnv, Install: install, Images: x.imagesJSON})
 	if err != nil {
-		return runner.Result{}, err
+		return runevent.Result{}, err
 	}
-	reader := &wire.Reader{Name: inst.Name, Event: func(e runner.Event) { x.sink.Add(e); notes.add(e) }}
+	reader := &wire.Reader{Name: inst.Name, Event: func(e runevent.Event) { x.sink.Add(e); notes.add(e) }}
 	defer reader.Flush()
 	secrets, revoke := x.secretsFor(ctx, inst)
 	defer revoke() // the job's GITHUB_TOKEN stops working when the job is over
@@ -757,23 +755,23 @@ func (x *execution) runInstance(ctx context.Context, inst engine.RemoteInstance)
 	if err != nil {
 		if jobCtx.Err() != nil && ctx.Err() == nil {
 			// A newer job of the job's concurrency group cancelled it.
-			conclusion = runner.Cancelled
-			x.sink.Add(runner.Event{Kind: runner.Notice, Time: time.Now(), Job: inst.Name,
+			conclusion = runevent.Cancelled
+			x.sink.Add(runevent.Event{Kind: runevent.Notice, Time: time.Now(), Job: inst.Name,
 				Text: "this job was cancelled by a newer job of its concurrency group (cancel-in-progress)"})
-			return runner.Result{Conclusion: runner.Cancelled}, nil
+			return runevent.Result{Conclusion: runevent.Cancelled}, nil
 		}
-		return runner.Result{}, err
+		return runevent.Result{}, err
 	}
 	if res.Error != "" {
-		return runner.Result{}, errors.New("the machine could not run the job: " + res.Error)
+		return runevent.Result{}, errors.New("the machine could not run the job: " + res.Error)
 	}
 	reader.Flush()
 	out, ok, err := reader.Result()
 	switch {
 	case err != nil:
-		return runner.Result{}, fmt.Errorf("the machine's result: %w", err)
+		return runevent.Result{}, fmt.Errorf("the machine's result: %w", err)
 	case !ok:
-		return runner.Result{}, fmt.Errorf("the machine exited with status %d without a result (its output is in the log)", res.ExitCode)
+		return runevent.Result{}, fmt.Errorf("the machine exited with status %d without a result (its output is in the log)", res.ExitCode)
 	}
 	conclusion, jobSummary = out.Conclusion, out.Summary
 	return out, nil
@@ -786,13 +784,13 @@ func (x *execution) runInstance(ctx context.Context, inst engine.RemoteInstance)
 // lacks a permission the job asks for, the job gets the default token and a
 // warning says so; when no token can be made the job runs without and a
 // warning says so (the token itself is never in the log).
-func (x *execution) secretsFor(ctx context.Context, inst engine.RemoteInstance) (secrets map[string]string, revoke func()) {
+func (x *execution) secretsFor(ctx context.Context, inst jobgraph.RemoteInstance) (secrets map[string]string, revoke func()) {
 	revoke = func() {}
 	if x.e.Tokens == nil || x.installation == 0 || x.run.Fork {
 		return x.secrets, revoke
 	}
 	warn := func(format string, a ...any) {
-		x.sink.Add(runner.Event{Kind: runner.Warning, Time: time.Now(), Job: inst.Name, Text: fmt.Sprintf(format, a...)})
+		x.sink.Add(runevent.Event{Kind: runevent.Warning, Time: time.Now(), Job: inst.Name, Text: fmt.Sprintf(format, a...)})
 	}
 	want := tokenPermissions(x.w, inst.Job)
 	tok, err := x.e.Tokens.RunToken(ctx, x.installation, x.run.Repo, want)

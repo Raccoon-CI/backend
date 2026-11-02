@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"raccoonci/internal/expr"
-	"raccoonci/internal/runner"
+	"raccoonci/internal/runevent"
 	"raccoonci/internal/value"
 	"raccoonci/internal/workflow"
 )
@@ -138,13 +138,13 @@ func (e *Executor) enterGroup(ctx context.Context, key, name string, h holder, c
 	e.gmu.Unlock()
 
 	if cancelRunning {
-		sink.Add(runner.Event{Kind: runner.Notice, Time: time.Now(),
+		sink.Add(runevent.Event{Kind: runevent.Notice, Time: time.Now(),
 			Text: fmt.Sprintf("concurrency group %q: cancelling %s, which is in it", name, holding.desc)})
 		if holding.cancel != nil {
 			holding.cancel()
 		}
 	} else {
-		sink.Add(runner.Event{Kind: runner.Notice, Time: time.Now(),
+		sink.Add(runevent.Event{Kind: runevent.Notice, Time: time.Now(),
 			Text: fmt.Sprintf("concurrency group %q: waiting for %s, which is in it", name, holding.desc)})
 	}
 	// A run that only waits must not hold one of the executor's places: with

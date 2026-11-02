@@ -7,37 +7,37 @@ import (
 	"time"
 
 	"raccoonci/internal/dispatch"
-	"raccoonci/internal/runner"
+	"raccoonci/internal/runevent"
 	"raccoonci/internal/server/github"
 	"raccoonci/internal/wire"
 )
 
 func TestAnnotationOf(t *testing.T) {
-	ev := func(k runner.EventKind, text string, props map[string]string) runner.Event {
-		return runner.Event{Kind: k, Text: text, Props: props}
+	ev := func(k runevent.EventKind, text string, props map[string]string) runevent.Event {
+		return runevent.Event{Kind: k, Text: text, Props: props}
 	}
 	for _, c := range []struct {
 		name string
-		e    runner.Event
+		e    runevent.Event
 		want github.Annotation
 		ok   bool
 	}{
-		{"an error with a place", ev(runner.Error, "boom", map[string]string{"file": "./src/a.go", "line": "3", "endLine": "5", "title": "T"}),
+		{"an error with a place", ev(runevent.Error, "boom", map[string]string{"file": "./src/a.go", "line": "3", "endLine": "5", "title": "T"}),
 			github.Annotation{Path: "src/a.go", StartLine: 3, EndLine: 5, Level: "failure", Title: "T", Message: "boom"}, true},
-		{"a warning without a place goes to .github line 1", ev(runner.Warning, "careful", nil),
+		{"a warning without a place goes to .github line 1", ev(runevent.Warning, "careful", nil),
 			github.Annotation{Path: ".github", StartLine: 1, EndLine: 1, Level: "warning", Message: "careful"}, true},
-		{"a notice", ev(runner.Notice, "fyi", map[string]string{"file": "x.txt"}),
+		{"a notice", ev(runevent.Notice, "fyi", map[string]string{"file": "x.txt"}),
 			github.Annotation{Path: "x.txt", StartLine: 1, EndLine: 1, Level: "notice", Message: "fyi"}, true},
-		{"a line without a file has no place of its own", ev(runner.Error, "x", map[string]string{"line": "9"}),
+		{"a line without a file has no place of its own", ev(runevent.Error, "x", map[string]string{"line": "9"}),
 			github.Annotation{Path: ".github", StartLine: 1, EndLine: 1, Level: "failure", Message: "x"}, true},
-		{"a file outside the tree is not trusted", ev(runner.Error, "x", map[string]string{"file": "../../etc/passwd", "line": "2"}),
+		{"a file outside the tree is not trusted", ev(runevent.Error, "x", map[string]string{"file": "../../etc/passwd", "line": "2"}),
 			github.Annotation{Path: ".github", StartLine: 1, EndLine: 1, Level: "failure", Message: "x"}, true},
-		{"an absolute file is not trusted", ev(runner.Error, "x", map[string]string{"file": "/etc/passwd", "line": "2"}),
+		{"an absolute file is not trusted", ev(runevent.Error, "x", map[string]string{"file": "/etc/passwd", "line": "2"}),
 			github.Annotation{Path: ".github", StartLine: 1, EndLine: 1, Level: "failure", Message: "x"}, true},
-		{"an end line before the start is ignored", ev(runner.Error, "x", map[string]string{"file": "a", "line": "7", "endLine": "2"}),
+		{"an end line before the start is ignored", ev(runevent.Error, "x", map[string]string{"file": "a", "line": "7", "endLine": "2"}),
 			github.Annotation{Path: "a", StartLine: 7, EndLine: 7, Level: "failure", Message: "x"}, true},
-		{"output is not an annotation", ev(runner.Output, "hello", nil), github.Annotation{}, false},
-		{"an empty message is not one", ev(runner.Error, "  ", nil), github.Annotation{}, false},
+		{"output is not an annotation", ev(runevent.Output, "hello", nil), github.Annotation{}, false},
+		{"an empty message is not one", ev(runevent.Error, "  ", nil), github.Annotation{}, false},
 	} {
 		got, ok := annotationOf(c.e)
 		if ok != c.ok || got != c.want {
@@ -49,7 +49,7 @@ func TestAnnotationOf(t *testing.T) {
 func TestOnlyTheFirstFiftyAnnotationsAreKeptAndTheRestCounted(t *testing.T) {
 	c := &annotations{}
 	for i := 0; i < 60; i++ {
-		c.add(runner.Event{Kind: runner.Warning, Text: "w"})
+		c.add(runevent.Event{Kind: runevent.Warning, Text: "w"})
 	}
 	list, dropped := c.get()
 	if len(list) != github.MaxAnnotations || dropped != 10 {
@@ -63,9 +63,9 @@ func TestACheckRunGetsTheJobSummaryAndTheAnnotationsOfItsSteps(t *testing.T) {
 	e.ex.Checks = checks
 	e.m.handle = func(c call, out *wire.Encoder) (dispatch.Result, error) {
 		now := time.Now()
-		out.Write(wire.Line{Event: &runner.Event{Kind: runner.Error, Time: now, Job: c.spec.Job, Text: "boom", Props: map[string]string{"file": "a.go", "line": "3"}}})
-		out.Write(wire.Line{Event: &runner.Event{Kind: runner.Output, Time: now, Job: c.spec.Job, Text: "just output"}})
-		out.Write(wire.Line{Result: &wire.Result{Conclusion: runner.Failure, Outputs: json.RawMessage(`{}`), Summary: "## Results\n3 failed"}})
+		out.Write(wire.Line{Event: &runevent.Event{Kind: runevent.Error, Time: now, Job: c.spec.Job, Text: "boom", Props: map[string]string{"file": "a.go", "line": "3"}}})
+		out.Write(wire.Line{Event: &runevent.Event{Kind: runevent.Output, Time: now, Job: c.spec.Job, Text: "just output"}})
+		out.Write(wire.Line{Result: &wire.Result{Conclusion: runevent.Failure, Outputs: json.RawMessage(`{}`), Summary: "## Results\n3 failed"}})
 		return dispatch.Result{}, nil
 	}
 	run := e.queue(t, "ann", twoJobs, nil)

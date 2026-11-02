@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"raccoonci/internal/runner"
+	"raccoonci/internal/runevent"
 	"raccoonci/internal/server/github"
 	"raccoonci/internal/server/store"
 )
@@ -37,13 +37,13 @@ func checkName(run store.Run, job string) string {
 }
 
 // checkConclusion maps a job's conclusion to GitHub's.
-func checkConclusion(c runner.Conclusion) string {
+func checkConclusion(c runevent.Conclusion) string {
 	switch c {
-	case runner.Success:
+	case runevent.Success:
 		return github.CheckSuccess
-	case runner.Cancelled:
+	case runevent.Cancelled:
 		return github.CheckCancelled
-	case runner.Skipped:
+	case runevent.Skipped:
 		return github.CheckSkipped
 	}
 	return github.CheckFailure
@@ -81,7 +81,7 @@ func (x *execution) startCheck(job string) *jobCheck {
 // finish completes the check run with the job's conclusion, its summary
 // ($GITHUB_STEP_SUMMARY, markdown; the plain title line when there is none)
 // and the annotations its steps reported.
-func (c *jobCheck) finish(conclusion runner.Conclusion, jobSummary string, notes *annotations) {
+func (c *jobCheck) finish(conclusion runevent.Conclusion, jobSummary string, notes *annotations) {
 	if c == nil {
 		return
 	}
