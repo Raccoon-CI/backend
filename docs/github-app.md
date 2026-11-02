@@ -24,12 +24,16 @@ GitHub → your avatar → **Settings** → **Developer settings** → **GitHub 
 
 | Permission | Access | Why |
 |---|---|---|
-| Contents | Read-only | the workflow files and the source of a commit |
+| Contents | Read and write | the workflow files and the source of a commit; the ceiling for a job's `permissions: contents: write` |
 | Commit statuses | Read and write | the `raccoonci / <workflow>` status on a commit |
-| Pull requests | Read-only | needed to receive pull request events |
+| Checks | Read and write | one check run per job, `raccoonci / <workflow> / <job>` |
+| Pull requests | Read and write | receiving pull request events; the ceiling for jobs that comment on or label pull requests |
+| Issues | Read and write | the ceiling for jobs that use issues (labels and comments of pull requests count as issues) |
+| Deployments | Read and write | the ceiling for jobs that create deployments |
+| Actions | Read-only | the ceiling for jobs that read runs or artifacts of GitHub's own Actions |
 | Metadata | Read-only | GitHub adds it itself |
 
-Nothing under Organization or Account permissions. Do **not** give Actions, Workflows or Administration. **Checks** (read and write) is not needed yet: check runs are not built. When they are, the permission is added to the App and each installation approves the change once.
+Each job's `GITHUB_TOKEN` is an installation token cut down to the permissions the job (or its workflow) asks for, and **GitHub refuses permissions the App itself lacks**: the App's permissions are the ceiling, and the server falls back to a read-only token with a warning in the job's log when a job asks for more. So give the App what jobs on your repositories may need, no more. The development App has exactly the table above. Packages, Pages, Discussions and Security events are not in it; a job asking for them gets the fallback. Nothing under Organization or Account permissions. Do **not** give Workflows or Administration. Adding or widening a permission later asks each installation to approve the change once.
 
 ### Subscribe to events
 
@@ -88,7 +92,7 @@ Start it **without** `-status=false` so that it reports commit statuses.
 3. When the run starts, the commit gets a pending `raccoonci / <workflow>` status, and a success or failure at the end.
 4. `POST /v1/runs` (start by hand) and a rerun look the installation up by themselves.
 
-What this checks that a token could not: installation tokens, the App's own permissions, deliveries that carry an installation id. What it does not cover: check runs, signing in with GitHub (both not built).
+What this checks that a token could not: installation tokens, the App's own permissions, deliveries that carry an installation id. It also covers the check run per job (a run's commit shows `raccoonci / <workflow> / <job>` made by the App) and the per-job `GITHUB_TOKEN`. What it does not cover: signing in with GitHub (not built).
 
 ## If something fails
 

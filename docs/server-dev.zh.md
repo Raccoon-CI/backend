@@ -2,7 +2,7 @@
 
 [English](server-dev.md) — 两个版本要同步修改。
 
-状态：`docs/server-design.md` 的第 1、2 步。服务端接收 GitHub 的 `push` 和 `pull_request` 投递（或者一个手动启动 workflow 的请求），判断它们会触发哪些 workflow，为每个存一条排队中的 run，按提交取回仓库，把每个 job 实例放到一台机器上跑，存下日志，并通过 API 展示 run 和日志。会把每个 run 作为 commit status 回报给 GitHub，也能取消和重跑 run。保存密钥和变量（在数据库里加密），只把 run 用到的那几个交给它，API token 有角色。还不发 check run（那需要 GitHub App），也不做用 GitHub 登录。
+状态：`docs/server-design.md` 的第 1、2 步。服务端接收 GitHub 的 `push` 和 `pull_request` 投递（或者一个手动启动 workflow 的请求），判断它们会触发哪些 workflow，为每个存一条排队中的 run，按提交取回仓库，把每个 job 实例放到一台机器上跑，存下日志，并通过 API 展示 run 和日志。会把每个 run 作为 commit status 回报给 GitHub，也能取消和重跑 run。保存密钥和变量（在数据库里加密），只把 run 用到的那几个交给它，API token 有角色。用 GitHub App 时还会给每个 job 发一个 check run，并给每个 job 一个 `GITHUB_TOKEN`。还不做用 GitHub 登录。
 
 ## 构建和启动
 
@@ -172,4 +172,5 @@ DELETE /v1/storage?org=acme        # 回到服务端自己的存储
 - **日志保留**（`-log-retention-days 0.01`，在开发库上）：早于 14 分钟的 20 个 run 在启动时被删掉 766 行日志，日志路由回 410，run 显示 `log_purged: true` 且结论还在；12 分钟前的 run 日志还在。之后改回默认的 90 天。
 - **artifact 记录：**用真实的上传协议和 SQLite 测过（上传、重启、列出、下载、过期清理）；真机只验证了现有数据库上的迁移和三个路由（空列表 200、404、404）。服务端上没有跑过上传 artifact 的 job：基准 workflow 没有一个用它，令牌也加不了 workflow。
 - **定时触发：**只有单测（时钟是传进去的）。手边没有带 `schedule:` 的仓库，令牌也加不了，所以没看到过真实触发。
-- **没试过：** 桶（没有给开发用 R2 桶的访问密钥，所以 artifact 和缓存走 S3 的路径以及桶的检查只用假的测过）、真实 job 上传 artifact、由 GitHub 发出的投递建出的 run、真实的 pull request、App 对真实 GitHub 的认证、真实 job 里的 artifact、带 matrix 的 run。
+- **以 GitHub App 身份**（2026-11-02，开发用 App "Raccoon CI (example App)" 装在组织的 8 个仓库上，旧的仓库 webhook 已删）：用 `POST /v1/runs` 手动启动的 run 自己找到了 installation、读到 workflow 和提交，在 InstaBox 机器上跑成功（机器 9.8 秒就绪，总共 19 秒）。GitHub 上这个提交显示 `pending` 然后 `success` 的 status，以及 check run `raccoonci / <workflow> / <job>`（已完成，"Success in 18s"），都是 `example-app[bot]` 建的。一个 job 要 App 没有的权限（`packages: write`），拿到了 GitHub 真实的 422、退回默认 token，日志里有警告。对真实 GitHub（`TestRealAppTokens`，需要 `RACCOONCI_TEST_APP_ID`、`_APP_KEY_FILE`、`_REPO`、`_OTHER_REPO`、`_SHA`）：只对一个仓库的 token 能读它（200）、读同一安装下另一个私有仓库是 404；只读 token 写不了 status（403）；有 `statuses: write` 的能写（201）但读不了 contents；吊销后的 token 失效（GitHub 不是立刻生效，要等一小会儿）。runner-images 轮询也第一次在真实网络上跑，读到了三个镜像。GitHub 自己发的 push（用 API 建了再删一个分支）经隧道带签名和 installation id 到达，因为仓库唯一的 workflow 只监听 `workflow_dispatch`，被记为忽略。
+- **没试过：** 桶（没有给开发用 R2 桶的访问密钥，所以 artifact 和缓存走 S3 的路径以及桶的检查只用假的测过）、真实 job 上传 artifact、由 GitHub 发出的投递建出的 run（这些仓库没有监听 push 的 workflow，也加不了）、真实的 pull request（它的合并 ref、fork）、机器上的 step 真的用 `GITHUB_TOKEN`（加 workflow 文件需要 `workflow` 权限，手边的 token 没有）、带 matrix 的 run。

@@ -24,12 +24,16 @@ GitHub → 右上角头像 → **Settings** → **Developer settings** → **Git
 
 | 权限 | 级别 | 用来做什么 |
 |---|---|---|
-| Contents | Read-only | 读 workflow 文件和某个提交的源码 |
+| Contents | Read and write | 读 workflow 文件和某个提交的源码；也是 job 的 `permissions: contents: write` 的上限 |
 | Commit statuses | Read and write | 在提交上写 `raccoonci / <workflow>` 状态 |
-| Pull requests | Read-only | 接收 pull request 事件需要它 |
+| Checks | Read and write | 每个 job 一个 check run，`raccoonci / <workflow> / <job>` |
+| Pull requests | Read and write | 接收 pull request 事件；也是在 PR 上评论、打标签的 job 的上限 |
+| Issues | Read and write | 用到 issue 的 job 的上限（PR 的标签和评论算 issue） |
+| Deployments | Read and write | 创建 deployment 的 job 的上限 |
+| Actions | Read-only | 读 GitHub 自己的 Actions 的 run 或 artifact 的 job 的上限 |
 | Metadata | Read-only | GitHub 自动加上 |
 
-Organization 和 Account 权限都不要。**不要**给 Actions、Workflows、Administration。**Checks**（读写）现在不需要：还没做 check run。做的时候给 App 加上这个权限，每个安装方确认一次即可。
+每个 job 的 `GITHUB_TOKEN` 是按 job（或其 workflow）要求的权限裁剪出来的 installation token，而 **GitHub 不允许要 App 自己没有的权限**：App 的权限就是上限，job 要得更多时服务端退回只读 token，并在 job 日志里警告。所以只给 App 你仓库里的 job 可能用到的权限，不要更多。开发用的 App 正好是上面这张表。表里没有 Packages、Pages、Discussions、Security events，要它们的 job 会得到退回的 token。Organization 和 Account 权限都不要。**不要**给 Workflows、Administration。以后新增或放宽权限，每个安装方都要确认一次。
 
 ### Subscribe to events（订阅事件）
 
@@ -88,7 +92,7 @@ RACCOONCI_WEBHOOK_SECRET_FILE=/data/home/.config/raccoonci/webhook.secret
 3. run 开始时，提交上出现 pending 的 `raccoonci / <workflow>` 状态，结束时变成 success 或 failure。
 4. `POST /v1/runs`（手动启动）和重跑会自己去查 installation。
 
-这一步能验证令牌验证不了的东西：installation 令牌、App 自己的权限、带 installation id 的投递。它不覆盖的：check run、GitHub 登录（两者都还没做）。
+这一步能验证令牌验证不了的东西：installation 令牌、App 自己的权限、带 installation id 的投递。它也覆盖每个 job 一个的 check run（run 所在的提交上出现 App 建的 `raccoonci / <workflow> / <job>`）和每个 job 的 `GITHUB_TOKEN`。它不覆盖的：GitHub 登录（还没做）。
 
 ## 出问题时
 
