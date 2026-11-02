@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"raccoonci/internal/server/store"
 )
@@ -76,6 +77,45 @@ func TestALimitedTokenSeesOnlyTheRunsOfItsRepositories(t *testing.T) {
 		if rec := call(h, c[0], c[1], api, c[2]); rec.Code != 403 {
 			t.Errorf("%s %s: %d, want 403", c[0], c[1], rec.Code)
 		}
+	}
+}
+
+func TestUsageIsShownPerMonthAndALimitedTokenSeesOnlyItsRepositories(t *testing.T) {
+	a, h := setup(t)
+	a.Quota = Quota{RepoMinutes: 600, OwnerMinutes: 6000}
+	day := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
+	a.Store.AddUsage(ctx(), "acme/web", day, 120, 1)
+	a.Store.AddUsage(ctx(), "acme/web", day.AddDate(0, 0, 1), 30, 1)
+	a.Store.AddUsage(ctx(), "acme/api", day, 600, 2)
+	a.Store.AddUsage(ctx(), "acme/web", day.AddDate(0, -1, 0), 99999, 1) // October
+
+	rec := call(h, "GET", "/v1/usage?month=2026-11", token, "")
+	var out struct {
+		Month string `json:"month"`
+		Quota Quota  `json:"quota"`
+		Repos []struct {
+			Repo           string `json:"repo"`
+			MachineSeconds int64  `json:"machine_seconds"`
+			Runs           int    `json:"runs"`
+		} `json:"repos"`
+		Days []struct{ Day, Repo string } `json:"days"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &out)
+	if rec.Code != 200 || out.Month != "2026-11" || out.Quota.RepoMinutes != 600 || len(out.Repos) != 2 || len(out.Days) != 3 ||
+		out.Repos[0].Repo != "acme/api" || out.Repos[0].MachineSeconds != 600 || out.Repos[1].MachineSeconds != 150 || out.Repos[1].Runs != 2 {
+		t.Fatalf("usage = %d %s", rec.Code, rec.Body)
+	}
+	lim := call(h, "GET", "/v1/usage?month=2026-11", limited(t, h, "acme/web"), "")
+	if lim.Code != 200 || strings.Contains(lim.Body.String(), "acme/api") || !strings.Contains(lim.Body.String(), "acme/web") {
+		t.Fatalf("a token limited to acme/web: %d %s", lim.Code, lim.Body)
+	}
+	for _, bad := range []string{"2026-13", "nov", "2026-1-1"} {
+		if rec := call(h, "GET", "/v1/usage?month="+bad, token, ""); rec.Code != 400 {
+			t.Errorf("month %q: %d", bad, rec.Code)
+		}
+	}
+	if rec := call(h, "GET", "/v1/usage", "", ""); rec.Code != 401 {
+		t.Errorf("no token: %d", rec.Code)
 	}
 }
 

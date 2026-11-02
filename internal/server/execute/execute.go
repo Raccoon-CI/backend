@@ -125,6 +125,12 @@ type Executor struct {
 	Install string
 	// Poll is how often the queue is looked at when nobody calls Wake.
 	Poll time.Duration
+	// Quota is the allowance of machine time per month for a repository and for
+	// an owner; zero means no limit. A run of one that has used it up fails at
+	// once with the reason.
+	Quota Quota
+	// Now is the clock (default time.Now); tests replace it.
+	Now func() time.Time
 	// MinFreeBytes, with Free, keeps new runs waiting in the queue while the
 	// work directory's disk has less than this available (0 = no check).
 	MinFreeBytes int64
@@ -268,6 +274,7 @@ func (e *Executor) execute(parent context.Context, run store.Run) {
 	defer e.unregister(run.ID)
 	began := time.Now()
 	conclusion := runner.Failure
+	var used *atomic.Int64 // the machine time of this run, once it has an execution
 	var installation int64
 	if ev, err := e.Store.GetEvent(ctx, run.EventID); err == nil {
 		installation = ev.InstallationID
@@ -293,6 +300,13 @@ func (e *Executor) execute(parent context.Context, run store.Run) {
 		if err := e.Store.FinishRun(context.Background(), run.ID, string(conclusion)); err != nil {
 			log.Error("recording the end of a run failed", "err", err)
 		}
+		if used != nil && used.Load() > 0 {
+			// What the run's machines were held for, counted against the allowance.
+			secs := (used.Load() + int64(time.Second) - 1) / int64(time.Second)
+			if err := e.Store.AddUsage(context.Background(), run.Repo, e.now(), secs, 1); err != nil {
+				log.Error("recording a run's machine time failed", "err", err)
+			}
+		}
 		state, desc := github.StateFailure, "Failed"
 		took := time.Since(began).Round(time.Second)
 		switch conclusion {
@@ -312,7 +326,15 @@ func (e *Executor) execute(parent context.Context, run store.Run) {
 			Text: fmt.Sprintf("the server stopped while this ran; it is started again from the beginning (attempt %d)", run.Attempts)})
 	}
 
+	if why := e.overQuota(ctx, run.Repo); why != "" {
+		sink.Add(runner.Event{Kind: runner.Error, Time: time.Now(), Text: why})
+		return
+	}
+
 	x, err := e.prepare(ctx, run, sink)
+	if err == nil {
+		used = &x.machineNanos
+	}
 	if err != nil {
 		if errors.Is(err, errSuperseded) {
 			sink.Add(runner.Event{Kind: runner.Notice, Time: time.Now(), Text: err.Error()})
@@ -441,6 +463,8 @@ type execution struct {
 	installation int64
 	// release gives up the run's concurrency group; nil when it has none.
 	release func()
+	// machineNanos adds up the time this run's job instances held machines.
+	machineNanos atomic.Int64
 	// imagesJSON is the runner-images snapshot the run was planned with, sent
 	// with every job so the machine plans with the same data.
 	imagesJSON []byte
@@ -713,6 +737,8 @@ func (x *execution) runInstance(ctx context.Context, inst engine.RemoteInstance)
 	defer reader.Flush()
 	secrets, revoke := x.secretsFor(ctx, inst)
 	defer revoke() // the job's GITHUB_TOKEN stops working when the job is over
+	heldFrom := time.Now()
+	defer func() { x.machineNanos.Add(int64(time.Since(heldFrom))) }() // from asking for the machine to the end of the instance
 	res, err := x.e.Machine.Run(jobCtx, fmt.Sprintf("rc-r%d-%d", x.run.ID, n), dispatch.Job{
 		Command: "run-instance",
 		Input:   input,

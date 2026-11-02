@@ -268,6 +268,15 @@ type Store interface {
 	// has passed, the oldest expiry first.
 	ExpiredArtifacts(ctx context.Context, now time.Time) ([]Artifact, error)
 
+	// AddUsage adds machine seconds (and finished runs) to a repository's row for
+	// the UTC day `at` falls on.
+	AddUsage(ctx context.Context, repo string, at time.Time, machineSeconds int64, runs int) error
+	// UsedSince sums the machine seconds of the days from the one `from` falls
+	// on, for a repository (owner/name) or all of an owner's (owner/*).
+	UsedSince(ctx context.Context, from time.Time, scope string) (int64, error)
+	// ListUsage returns the usage rows of the days from..to, both included.
+	ListUsage(ctx context.Context, from, to time.Time) ([]Usage, error)
+
 	// PutInstallation makes or updates an installation of the GitHub App; with
 	// replaceRepos its repository list becomes repos, else repos are added.
 	PutInstallation(ctx context.Context, in Installation, repos []string, replaceRepos bool) error

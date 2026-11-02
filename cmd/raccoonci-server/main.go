@@ -95,6 +95,8 @@ func run(args []string) error {
 	snapshot := fs.String("snapshot", os.Getenv("RACCOONCI_INSTABOX_SNAPSHOT"), "the InstaBox runner snapshot machines start from (env RACCOONCI_INSTABOX_SNAPSHOT); needed to run jobs")
 	status := fs.Bool("status", true, "report each run to GitHub as a commit status (raccoonci / <workflow>) on the commit it ran; the token or App needs to write commit statuses")
 	imagesEvery := fs.Duration("runner-images-interval", 6*time.Hour, "how often to read what GitHub's hosted runner images preinstall (no token needed); runs are planned with the last good data, else the snapshot built into the binary (0 = never poll)")
+	quotaRepo := fs.Int64("quota-repo-minutes", 0, "an allowance of machine time per UTC month for each repository, in minutes (0: none); a run of a repository that used it up fails at once with the reason, and runs start again on the 1st")
+	quotaOwner := fs.Int64("quota-owner-minutes", 0, "the same for each owner (user or organization) over all its repositories (0: none)")
 	minFreeMB := fs.Int("min-free-mb", 1024, "keep queued runs waiting while the data directory's disk has less than this many MiB free (0 = no check)")
 	maxSourceMB := fs.Int("max-source-mb", 2048, "fail a run whose repository source package is bigger than this many MiB")
 	oidcOn := fs.Bool("oidc", true, "be an OpenID Connect issuer for jobs with permissions: id-token: write (needs an https -public-url; the issuer is <public-url>/oidc); the signing key is sealed with the master key, or lives in memory without one")
@@ -343,6 +345,8 @@ Secrets are read from the environment, or from the file named by NAME_FILE (mode
 				syncer.Run(ctx, *imagesEvery)
 			}()
 		}
+		ex.Quota = execute.Quota{RepoMinutes: *quotaRepo, OwnerMinutes: *quotaOwner}
+		apiSvc.Quota = api.Quota{RepoMinutes: *quotaRepo, OwnerMinutes: *quotaOwner}
 		if *minFreeMB > 0 {
 			ex.MinFreeBytes, ex.Free = int64(*minFreeMB)<<20, execute.DiskFree(*dataDir)
 		}

@@ -485,6 +485,35 @@ paths:
       responses:
         "204": {description: signed out}
         "400": {$ref: "#/components/responses/Error"}
+  /v1/usage:
+    get:
+      summary: The machine time used in a month
+      description: |
+        Machine time is how long job instances held machines, start-up included; it is what the monthly allowances (`quota`) are counted against. `month` is a UTC month like `2026-11` (the current one by default). `repos` is per repository over the month, `days` per day and repository. A token limited to repositories sees only theirs.
+      parameters:
+        - {name: month, in: query, required: false, schema: {type: string, example: "2026-11"}}
+      responses:
+        "200":
+          description: the usage
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  month: {type: string}
+                  quota:
+                    type: object
+                    description: "minutes per month; 0 is no allowance"
+                    properties:
+                      repo_minutes: {type: integer}
+                      owner_minutes: {type: integer}
+                  repos:
+                    type: array
+                    items: {$ref: "#/components/schemas/Usage"}
+                  days:
+                    type: array
+                    items: {$ref: "#/components/schemas/Usage"}
+        "400": {$ref: "#/components/responses/Error"}
   /v1/installations:
     get:
       summary: Where the GitHub App is installed
@@ -577,6 +606,13 @@ components:
         text: {type: string}
         props: {type: object, additionalProperties: {type: string}, description: "an annotation's file, line, title"}
         conclusion: {type: string}
+    Usage:
+      type: object
+      properties:
+        day: {type: string, description: "UTC date; absent in the per-repository totals"}
+        repo: {type: string}
+        machine_seconds: {type: integer}
+        runs: {type: integer}
     Installation:
       type: object
       properties:

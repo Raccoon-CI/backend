@@ -46,6 +46,9 @@ type API struct {
 	// Artifacts lists and links a run's artifacts; nil switches those routes
 	// off (503).
 	Artifacts ArtifactStore
+	// Quota is what the server was told the monthly allowances are, only to show
+	// them in /v1/usage (the executor enforces them).
+	Quota Quota
 	// Auth signs people in with GitHub (auth.Service); nil switches the sign-in
 	// routes off (503).
 	Auth SignIn
@@ -111,6 +114,7 @@ func (a *API) routes() []route {
 		{"GET /v1/runs/{id}/artifacts/{artifact}/download", a.downloadArtifact, read},
 		{"GET /v1/events/{id}", a.getEvent, read},
 		{"GET /v1/installations", a.listInstallations, read},
+		{"GET /v1/usage", a.getUsage, read},
 		{"GET /v1/auth/github/login", a.authLogin, open},
 		{"GET /v1/auth/github/callback", a.authCallback, open},
 		{"GET /v1/auth/me", a.authMe, read},
@@ -213,6 +217,8 @@ func (a *API) inScope(w http.ResponseWriter, r *http.Request, repos []string) bo
 	}
 	pattern := strings.TrimPrefix(r.Pattern, "GET ")
 	switch {
+	case pattern == "/v1/usage":
+		return true // getUsage leaves out the repositories the token may not see
 	case pattern == "/v1/runs":
 		return true // listRuns applies the list itself
 	case strings.HasPrefix(pattern, "/v1/runs/{id}") && r.Method == http.MethodGet:
