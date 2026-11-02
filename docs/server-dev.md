@@ -11,7 +11,7 @@ make build                       # dist/raccoonci and dist/raccoonci-server
 raccoonci-server -allow owner/name [-allow owner/*] [-listen 127.0.0.1:18080] [-data-dir DIR] [how to run jobs]
 ```
 
-At least one `-allow` is needed: a delivery or request for any other repository is refused or forgotten. The database is `DIR/server.db` (SQLite, migrated at start). Deliveries a restart interrupted are handled again at start; runs that were in progress are ended as failed.
+At least one `-allow` is needed: a delivery or request for any other repository is refused or forgotten. The database is `DIR/server.db` (SQLite, migrated at start). Deliveries a restart interrupted are handled again at start; runs that were in progress are queued again (see Restarts).
 
 **How to run jobs** (without one of these, runs stay queued):
 
@@ -34,7 +34,7 @@ Each is an environment variable `NAME`, or `NAME_FILE` naming a file that only y
 
 ## Telling GitHub
 
-A repository webhook (development) or the GitHub App (the real thing) points at `https://<your host>/webhooks/github`, content type `application/json`, secret = `RACCOONCI_WEBHOOK_SECRET`, events `push` and `pull_request`. While developing on a sandbox with no public address, the address is a Cloudflare Tunnel to `127.0.0.1:18080`.
+A repository webhook (development) or the GitHub App (the real thing) points at `https://<your host>/webhooks/github`, content type `application/json`, secret = `RACCOONCI_WEBHOOK_SECRET`, events `push` and `pull_request`. How to register the App: [github-app.md](github-app.md). While developing on a sandbox with no public address, the address is a Cloudflare Tunnel to `127.0.0.1:18080`.
 
 ## Starting a run
 

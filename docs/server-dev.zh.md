@@ -11,7 +11,7 @@ make build                       # dist/raccoonci 和 dist/raccoonci-server
 raccoonci-server -allow owner/name [-allow owner/*] [-listen 127.0.0.1:18080] [-data-dir DIR] [怎么跑 job]
 ```
 
-至少要一个 `-allow`：别的仓库的投递或请求会被拒绝或忘掉。数据库是 `DIR/server.db`（SQLite，启动时迁移）。被重启打断的投递在启动时会重新处理；正在进行中的 run 会被记为失败。
+至少要一个 `-allow`：别的仓库的投递或请求会被拒绝或忘掉。数据库是 `DIR/server.db`（SQLite，启动时迁移）。被重启打断的投递在启动时会重新处理；正在进行中的 run 会重新排队（见"重启"一节）。
 
 **怎么跑 job**（下面两种都没配时，run 一直排队）：
 
@@ -34,7 +34,7 @@ raccoonci-server -allow owner/name [-allow owner/*] [-listen 127.0.0.1:18080] [-
 
 ## 告诉 GitHub
 
-仓库 webhook（开发用）或 GitHub App（正式的）指向 `https://<你的主机>/webhooks/github`，内容类型 `application/json`，secret 就是 `RACCOONCI_WEBHOOK_SECRET`，事件选 `push` 和 `pull_request`。在没有公网地址的沙箱上开发时，这个地址是指向 `127.0.0.1:18080` 的 Cloudflare Tunnel。
+仓库 webhook（开发用）或 GitHub App（正式的）指向 `https://<你的主机>/webhooks/github`，内容类型 `application/json`，secret 就是 `RACCOONCI_WEBHOOK_SECRET`，事件选 `push` 和 `pull_request`。怎么注册 App：[github-app.zh.md](github-app.zh.md)。在没有公网地址的沙箱上开发时，这个地址是指向 `127.0.0.1:18080` 的 Cloudflare Tunnel。
 
 ## 启动一个 run
 
