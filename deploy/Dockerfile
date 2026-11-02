@@ -27,4 +27,6 @@ COPY --from=build /out/raccoonci-server /raccoonci-server
 COPY --from=build --chown=65532:65532 /out/data /data
 VOLUME /data
 EXPOSE 18080
+HEALTHCHECK --interval=30s --timeout=6s --start-period=20s --retries=3 \
+  CMD ["/raccoonci-server", "-check", "http://127.0.0.1:18080/readyz"]
 ENTRYPOINT ["/raccoonci-server", "-data-dir", "/data", "-listen", "0.0.0.0:18080"]

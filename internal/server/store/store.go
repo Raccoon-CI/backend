@@ -309,5 +309,9 @@ type Store interface {
 	// RevokeToken reports whether there was a working token with that id.
 	RevokeToken(ctx context.Context, id int64) (bool, error)
 
+	// Ping checks that the database can be written (it takes its write lock and
+	// lets it go) without writing anything.
+	Ping(ctx context.Context) error
+
 	Close() error
 }

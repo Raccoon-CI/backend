@@ -53,6 +53,22 @@ func OpenSQLite(path string) (*SQLite, error) {
 // Close closes the database.
 func (s *SQLite) Close() error { return s.db.Close() }
 
+// Ping implements Store: it takes the database's write lock and lets it go
+// again, which fails when the database is locked for good, read-only or gone,
+// without writing anything.
+func (s *SQLite) Ping(ctx context.Context) error {
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return err
+	}
+	_, err = conn.ExecContext(ctx, `ROLLBACK`)
+	return err
+}
+
 func (s *SQLite) migrate() error {
 	if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)`); err != nil {
 		return err

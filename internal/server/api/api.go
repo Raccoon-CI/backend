@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -46,6 +47,10 @@ type API struct {
 	// Artifacts lists and links a run's artifacts; nil switches those routes
 	// off (503).
 	Artifacts ArtifactStore
+	// Checks are what /readyz looks at (the database, the disk...); none means
+	// it only says the process is up. Log, if set, gets why one failed.
+	Checks []Check
+	Log    *slog.Logger
 	// Quota is what the server was told the monthly allowances are, only to show
 	// them in /v1/usage (the executor enforces them).
 	Quota Quota
@@ -99,6 +104,7 @@ type route struct {
 func (a *API) routes() []route {
 	return []route{
 		{"GET /healthz", a.health, open},
+		{"GET /readyz", a.ready, open},
 		{"GET /v1/openapi.yaml", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/yaml")
 			w.Write(openapiSpec)

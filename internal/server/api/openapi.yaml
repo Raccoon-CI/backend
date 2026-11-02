@@ -10,6 +10,22 @@ info:
     server is started with is an admin token; others are made through
     `POST /v1/tokens`. With no way to tell tokens apart the API is closed (503).
 paths:
+  /readyz:
+    get:
+      summary: Readiness, no authentication
+      description: |
+        Whether the server can do its work now, which `/healthz` (the process is up) does not say. It checks that the database can be written and, when `-min-free-mb` is set, that the disk is not nearly full. A proxy or an orchestrator uses it to stop sending requests to, or to restart, a server that is up but cannot work. It says which check failed, not why (the log has the reason).
+      responses:
+        "200":
+          description: ready
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Readiness"}
+        "503":
+          description: not ready
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Readiness"}
   /healthz:
     get:
       summary: Liveness, no authentication
@@ -606,6 +622,12 @@ components:
         text: {type: string}
         props: {type: object, additionalProperties: {type: string}, description: "an annotation's file, line, title"}
         conclusion: {type: string}
+    Readiness:
+      type: object
+      properties:
+        status: {type: string, enum: [ready, not ready]}
+        version: {type: string}
+        checks: {type: object, additionalProperties: {type: string, enum: [ok, failing]}}
     Usage:
       type: object
       properties:

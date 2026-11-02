@@ -87,6 +87,9 @@ func run(args []string) error {
 	if len(args) > 0 && args[0] == "replay" {
 		return replay(args[1:])
 	}
+	if len(args) == 2 && args[0] == "-check" {
+		return healthCheck(args[1])
+	}
 	fs := flag.NewFlagSet("raccoonci-server", flag.ExitOnError)
 	showVersion := fs.Bool("version", false, "print the version and exit")
 	listen := fs.String("listen", "127.0.0.1:18080", "address to listen on (put a TLS-terminating proxy or tunnel in front of it)")
@@ -192,7 +195,19 @@ Secrets are read from the environment, or from the file named by NAME_FILE (mode
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/webhooks/github", hook)
-	apiSvc := &api.API{Store: st, Dispatcher: hook, Token: apiToken, Version: version}
+	apiSvc := &api.API{Store: st, Dispatcher: hook, Token: apiToken, Version: version, Log: log}
+	apiSvc.Checks = []api.Check{{Name: "database", Run: st.Ping}}
+	if *minFreeMB > 0 {
+		free, need := execute.DiskFree(*dataDir), int64(*minFreeMB)<<20
+		apiSvc.Checks = append(apiSvc.Checks, api.Check{Name: "disk", Run: func(context.Context) error {
+			if n, err := free(); err != nil {
+				return err
+			} else if n < need {
+				return fmt.Errorf("%d MiB free, %d MiB needed", n>>20, need>>20)
+			}
+			return nil
+		}})
+	}
 	if *clientID != "" {
 		clientSecret, err := config.Secret("RACCOONCI_GITHUB_CLIENT_SECRET")
 		if err != nil {
