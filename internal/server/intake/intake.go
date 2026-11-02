@@ -62,6 +62,11 @@ type Handler struct {
 	// Inline handles a delivery before answering instead of in the
 	// background; tests use it.
 	Inline bool
+	// Installation, if set, finds the installation of the GitHub App on a
+	// repository that no delivery has named yet (github.App.InstallationOf); it
+	// returns github.ErrNotFound when the App is not installed there. Without
+	// it a run started by hand uses installation 0, which a token ignores.
+	Installation func(ctx context.Context, repo string) (int64, error)
 	// Notify, if set, is called after runs have been queued, so the executor
 	// need not wait for its next look at the queue.
 	Notify func()

@@ -32,6 +32,7 @@ type fakeSource struct {
 	changedCalls int
 	readAt       []string
 	installation int64
+	resolvedFor  int64             // the installation ResolveRef was asked with
 	refs         map[string]string // ResolveRef
 }
 
@@ -43,9 +44,10 @@ func (f *fakeSource) WorkflowFiles(_ context.Context, inst int64, repo, ref stri
 	return f.files, f.filesErr
 }
 
-func (f *fakeSource) ResolveRef(_ context.Context, _ int64, _, ref string) (string, error) {
+func (f *fakeSource) ResolveRef(_ context.Context, inst int64, _, ref string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.resolvedFor = inst
 	if sha, ok := f.refs[ref]; ok {
 		return sha, nil
 	}

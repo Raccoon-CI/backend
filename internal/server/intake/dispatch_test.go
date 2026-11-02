@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"raccoonci/internal/server/github"
+	"raccoonci/internal/server/store"
 )
 
 const dispatchable = `on:
@@ -118,6 +119,74 @@ func TestRerunRepeatsAFinishedRunExactly(t *testing.T) {
 	}
 	if _, err := e.h.Rerun(context.Background(), 999); statusOf(err) != http.StatusNotFound {
 		t.Fatalf("a missing run: %v", err)
+	}
+}
+
+func TestDispatchActsForTheInstallationOfTheGitHubApp(t *testing.T) {
+	ctx := context.Background()
+	req := DispatchRequest{Repo: "acme/web", Ref: "main", Workflow: ".github/workflows/manual.yml", Inputs: map[string]string{"who": "me"}}
+
+	// A delivery has named the installation: the run uses it, nothing is asked of GitHub.
+	e := dispatchEnv(t)
+	asked := 0
+	e.h.Installation = func(context.Context, string) (int64, error) { asked++; return 999, nil }
+	e.st.RecordEvent(ctx, store.Event{DeliveryID: "d0", Kind: "push", Repo: "acme/web", InstallationID: 42, Payload: []byte("{}"), Status: store.EventIgnored})
+	run, err := e.h.Dispatch(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e.src.resolvedFor != 42 || e.event(t, run.EventID).InstallationID != 42 || asked != 0 {
+		t.Fatalf("resolved for %d, event installation %d, GitHub asked %d times: want 42, 42, 0", e.src.resolvedFor, e.event(t, run.EventID).InstallationID, asked)
+	}
+
+	// No delivery has: GitHub is asked, and the answer is on the event, which is
+	// where the executor reads it for the source and the status.
+	e = dispatchEnv(t)
+	e.h.Installation = func(_ context.Context, repo string) (int64, error) {
+		if repo != "acme/web" {
+			t.Errorf("asked about %q", repo)
+		}
+		return 77, nil
+	}
+	run, err = e.h.Dispatch(ctx, req)
+	if err != nil || e.src.resolvedFor != 77 || e.event(t, run.EventID).InstallationID != 77 {
+		t.Fatalf("run %+v, %v, resolved for %d", run, err, e.src.resolvedFor)
+	}
+
+	// The App is not installed there: a clear refusal, no run.
+	e = dispatchEnv(t)
+	e.h.Installation = func(context.Context, string) (int64, error) { return 0, github.ErrNotFound }
+	if _, err := e.h.Dispatch(ctx, req); statusOf(err) != http.StatusNotFound || !strings.Contains(err.Error(), "not installed") {
+		t.Fatalf("err = %v", err)
+	}
+	if len(e.runs(t)) != 0 {
+		t.Fatal("a refused dispatch left a run")
+	}
+
+	// A token needs no installation: nothing is asked and the event has 0.
+	e = dispatchEnv(t)
+	run, err = e.h.Dispatch(ctx, req)
+	if err != nil || e.event(t, run.EventID).InstallationID != 0 {
+		t.Fatalf("run %+v, %v", run, err)
+	}
+}
+
+func TestRerunOfARunWithoutAnInstallationFindsOne(t *testing.T) {
+	ctx := context.Background()
+	e := dispatchEnv(t)
+	first, err := e.h.Dispatch(ctx, DispatchRequest{Repo: "acme/web", Ref: "main", Workflow: ".github/workflows/manual.yml", Inputs: map[string]string{"who": "me"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.st.ClaimRun(ctx)
+	e.st.FinishRun(ctx, first.ID, "success")
+	e.h.Installation = func(context.Context, string) (int64, error) { return 55, nil }
+	again, err := e.h.Rerun(ctx, first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := e.event(t, again.EventID).InstallationID; got != 55 {
+		t.Fatalf("the rerun's event names installation %d, want 55", got)
 	}
 }
 

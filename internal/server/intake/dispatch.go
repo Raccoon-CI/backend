@@ -50,6 +50,25 @@ var (
 	refChars = regexp.MustCompile(`^[A-Za-z0-9._/@+-]+$`)
 )
 
+// installationFor says which installation of the GitHub App serves a
+// repository: the one a stored delivery named, else Installation's answer.
+// 0 (no installation) is right for a token, which needs none.
+func (h *Handler) installationFor(ctx context.Context, repo string) (int64, error) {
+	known, err := h.Store.Repos(ctx)
+	if err != nil {
+		return 0, err
+	}
+	for _, r := range known {
+		if r.Name == repo && r.InstallationID != 0 {
+			return r.InstallationID, nil
+		}
+	}
+	if h.Installation != nil {
+		return h.Installation(ctx, repo)
+	}
+	return 0, nil
+}
+
 // Dispatch creates a run of a workflow that has a workflow_dispatch trigger,
 // for the commit a ref names now, and returns it.
 func (h *Handler) Dispatch(ctx context.Context, req DispatchRequest) (store.Run, error) {
@@ -76,14 +95,21 @@ func (h *Handler) Dispatch(ctx context.Context, req DispatchRequest) (store.Run,
 	}
 	// The full ref is unambiguous where a bare name could be a branch or a tag
 	// (the commits API takes it, checked against GitHub).
-	sha, err := h.Source.ResolveRef(ctx, 0, req.Repo, fullRef)
+	inst, err := h.installationFor(ctx, req.Repo)
+	if errors.Is(err, github.ErrNotFound) {
+		return store.Run{}, refuse(http.StatusNotFound, "the GitHub App is not installed on %s", req.Repo)
+	}
+	if err != nil {
+		return store.Run{}, fmt.Errorf("finding the installation for %s: %w", req.Repo, err)
+	}
+	sha, err := h.Source.ResolveRef(ctx, inst, req.Repo, fullRef)
 	if errors.Is(err, github.ErrNotFound) {
 		return store.Run{}, refuse(http.StatusNotFound, "no such ref %q in %s", req.Ref, req.Repo)
 	}
 	if err != nil {
 		return store.Run{}, fmt.Errorf("resolving %s: %w", req.Ref, err)
 	}
-	text, err := h.Source.FileAt(ctx, 0, req.Repo, req.Workflow, sha)
+	text, err := h.Source.FileAt(ctx, inst, req.Repo, req.Workflow, sha)
 	if errors.Is(err, github.ErrNotFound) {
 		return store.Run{}, refuse(http.StatusNotFound, "%s does not exist at %s", req.Workflow, sha)
 	}
@@ -120,7 +146,7 @@ func (h *Handler) Dispatch(ctx context.Context, req DispatchRequest) (store.Run,
 	var id [12]byte
 	rand.Read(id[:])
 	ev, _, err := h.Store.RecordEvent(ctx, store.Event{
-		DeliveryID: "dispatch-" + hex.EncodeToString(id[:]), Kind: "workflow_dispatch", Repo: req.Repo,
+		DeliveryID: "dispatch-" + hex.EncodeToString(id[:]), Kind: "workflow_dispatch", Repo: req.Repo, InstallationID: inst,
 		Payload: payload, Status: store.EventHandled, Note: "started by hand through the API",
 	})
 	if err != nil {

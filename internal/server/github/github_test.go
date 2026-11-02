@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -99,6 +100,34 @@ func TestAppRefusesADeliveryWithoutInstallationAndSurfacesGitHubsReason(t *testi
 	_, err := app.Token(context.Background(), 5)
 	if err == nil || !strings.Contains(err.Error(), "could not be decoded") {
 		t.Fatalf("error = %v, want GitHub's message in it", err)
+	}
+}
+
+func TestAppFindsItsInstallationOnARepository(t *testing.T) {
+	key := newKey(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		verifyJWT(t, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "), &key.PublicKey) // the App's own JWT, not an installation token
+		switch r.URL.Path {
+		case "/repos/acme/web/installation":
+			fmt.Fprint(w, `{"id":4242,"account":{"login":"acme"}}`)
+		case "/repos/acme/broken/installation":
+			w.WriteHeader(500)
+			fmt.Fprint(w, `{"message":"boom"}`)
+		default:
+			w.WriteHeader(404)
+			fmt.Fprint(w, `{"message":"Not Found"}`)
+		}
+	}))
+	defer srv.Close()
+	app := &App{ID: 1, Key: key, Base: srv.URL}
+	if id, err := app.InstallationOf(context.Background(), "acme/web"); err != nil || id != 4242 {
+		t.Fatalf("id = %d, %v", id, err)
+	}
+	if _, err := app.InstallationOf(context.Background(), "acme/none"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("not installed: err = %v, want ErrNotFound", err)
+	}
+	if _, err := app.InstallationOf(context.Background(), "acme/broken"); err == nil || errors.Is(err, ErrNotFound) || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("a server error must not look like 'not installed': %v", err)
 	}
 }
 

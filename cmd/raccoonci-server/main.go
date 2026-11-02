@@ -149,6 +149,9 @@ Secrets are read from the environment, or from the file named by NAME_FILE (mode
 
 	gh := &github.Client{Tokens: tokens}
 	hook := &intake.Handler{Secret: []byte(webhookSecret), Store: st, Allow: allow, Log: log, Source: gh}
+	if app, ok := tokens.(*github.App); ok {
+		hook.Installation = app.InstallationOf // a run started by hand names no installation itself
+	}
 	mux := http.NewServeMux()
 	mux.Handle("/webhooks/github", hook)
 	apiSvc := &api.API{Store: st, Dispatcher: hook, Token: apiToken, Version: version}

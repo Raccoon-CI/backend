@@ -100,6 +100,53 @@ func (a *App) jwt() (string, error) {
 	return signing + "." + b64(sig), nil
 }
 
+// InstallationOf finds the installation of the App on a repository
+// ("owner/name"): what a run started by hand needs, since no delivery has told
+// the server. ErrNotFound means the App is not installed there.
+func (a *App) InstallationOf(ctx context.Context, repo string) (int64, error) {
+	jwt, err := a.jwt()
+	if err != nil {
+		return 0, err
+	}
+	base := a.Base
+	if base == "" {
+		base = "https://api.github.com"
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s/repos/%s/installation", base, repo), nil)
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Authorization", "Bearer "+jwt)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	h := a.HTTP
+	if h == nil {
+		h = &http.Client{Timeout: 30 * time.Second}
+	}
+	resp, err := h.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return 0, err
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return 0, ErrNotFound
+	}
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("github: installation of %s: %s: %s", repo, resp.Status, strings.TrimSpace(string(body[:min(len(body), 200)])))
+	}
+	var out struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil || out.ID == 0 {
+		return 0, errors.New("github: the installation reply could not be read")
+	}
+	return out.ID, nil
+}
+
 // Token implements TokenSource.
 func (a *App) Token(ctx context.Context, installationID int64) (string, error) {
 	if installationID == 0 {

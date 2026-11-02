@@ -27,6 +27,14 @@ func (h *Handler) Rerun(ctx context.Context, runID int64) (store.Run, error) {
 	if err != nil {
 		return store.Run{}, fmt.Errorf("reading the event of run %d: %w", runID, err)
 	}
+	// A run started by hand before the App was known has no installation.
+	if ev.InstallationID == 0 {
+		inst, err := h.installationFor(ctx, ev.Repo)
+		if err != nil {
+			return store.Run{}, fmt.Errorf("finding the installation for %s: %w", ev.Repo, err)
+		}
+		ev.InstallationID = inst
+	}
 	// A rerun is a delivery of its own as far as the store goes: a run belongs
 	// to one event and one workflow file, and the same pair cannot start twice.
 	var id [12]byte
