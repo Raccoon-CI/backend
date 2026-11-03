@@ -7,10 +7,10 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/Raccoon-CI/raccoonci/internal/server/config"
-	"github.com/Raccoon-CI/raccoonci/internal/server/storagecheck"
-	"github.com/Raccoon-CI/raccoonci/internal/server/vault"
-	"github.com/Raccoon-CI/raccoonci/pkg/blob"
+	"github.com/Raccoon-CI/backend/internal/server/config"
+	"github.com/Raccoon-CI/backend/internal/server/storagecheck"
+	"github.com/Raccoon-CI/backend/internal/server/vault"
+	"github.com/Raccoon-CI/lib/pkg/blob"
 )
 
 // openVault makes the vault the secrets are sealed with, from the master key

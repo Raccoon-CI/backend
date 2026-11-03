@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/Raccoon-CI/raccoonci/internal/server/store"
+	"github.com/Raccoon-CI/backend/internal/server/store"
 )
 
 // Rerun queues a new run like a finished one: the same event, commit, workflow

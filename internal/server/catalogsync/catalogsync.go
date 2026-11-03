@@ -15,8 +15,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/Raccoon-CI/raccoonci/internal/server/store"
-	"github.com/Raccoon-CI/raccoonci/pkg/catalog"
+	"github.com/Raccoon-CI/backend/internal/server/store"
+	"github.com/Raccoon-CI/lib/pkg/catalog"
 )
 
 // documentName is the stored feed text.

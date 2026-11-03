@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Raccoon-CI/raccoonci/internal/server/store"
+	"github.com/Raccoon-CI/backend/internal/server/store"
 )
 
 // failingStart makes RequeueInterrupted, the first thing Run does, fail the

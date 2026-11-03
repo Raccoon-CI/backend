@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/Raccoon-CI/raccoonci/internal/server/store"
+	"github.com/Raccoon-CI/backend/internal/server/store"
 )
 
 // installationPayload is the part of an `installation` or

@@ -19,8 +19,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Raccoon-CI/raccoonci/internal/server/store"
-	"github.com/Raccoon-CI/raccoonci/internal/server/vault"
+	"github.com/Raccoon-CI/backend/internal/server/store"
+	"github.com/Raccoon-CI/backend/internal/server/vault"
 )
 
 // Limits, GitHub's own.

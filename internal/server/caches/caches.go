@@ -31,9 +31,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Raccoon-CI/raccoonci/pkg/artifact"
-	"github.com/Raccoon-CI/raccoonci/pkg/blob"
-	"github.com/Raccoon-CI/raccoonci/pkg/cache"
+	"github.com/Raccoon-CI/lib/pkg/artifact"
+	"github.com/Raccoon-CI/lib/pkg/blob"
+	"github.com/Raccoon-CI/lib/pkg/cache"
 )
 
 const (

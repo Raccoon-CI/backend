@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Raccoon-CI/raccoonci/pkg/archive"
+	"github.com/Raccoon-CI/lib/pkg/archive"
 )
 
 type entry struct {

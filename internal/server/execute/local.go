@@ -11,8 +11,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/Raccoon-CI/raccoonci/pkg/archive"
-	"github.com/Raccoon-CI/raccoonci/pkg/dispatch"
+	"github.com/Raccoon-CI/lib/pkg/archive"
+	"github.com/Raccoon-CI/lib/pkg/dispatch"
 )
 
 // Local runs a job on the machine the server runs on, as this user, by

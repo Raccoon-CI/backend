@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Raccoon-CI/raccoonci/internal/server/intake"
-	"github.com/Raccoon-CI/raccoonci/internal/server/store"
+	"github.com/Raccoon-CI/backend/internal/server/intake"
+	"github.com/Raccoon-CI/backend/internal/server/store"
 )
 
 // dispatchRun is POST /v1/runs: start a workflow by hand.

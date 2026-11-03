@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Raccoon-CI/raccoonci/internal/server/github"
-	"github.com/Raccoon-CI/raccoonci/internal/server/store"
+	"github.com/Raccoon-CI/backend/internal/server/github"
+	"github.com/Raccoon-CI/backend/internal/server/store"
 )
 
 const dispatchable = `on:

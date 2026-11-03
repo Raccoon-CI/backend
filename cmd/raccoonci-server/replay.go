@@ -12,8 +12,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/Raccoon-CI/raccoonci/internal/server/config"
-	"github.com/Raccoon-CI/raccoonci/internal/server/intake"
+	"github.com/Raccoon-CI/backend/internal/server/config"
+	"github.com/Raccoon-CI/backend/internal/server/intake"
 )
 
 // replay sends a recorded delivery to a server, signed with the webhook

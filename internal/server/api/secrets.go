@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Raccoon-CI/raccoonci/internal/server/secrets"
-	"github.com/Raccoon-CI/raccoonci/internal/server/store"
+	"github.com/Raccoon-CI/backend/internal/server/secrets"
+	"github.com/Raccoon-CI/backend/internal/server/store"
 )
 
 // secretBody is what PUT /v1/secrets and /v1/vars take.

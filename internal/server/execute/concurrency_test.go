@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Raccoon-CI/raccoonci/internal/server/store"
-	"github.com/Raccoon-CI/raccoonci/pkg/dispatch"
-	"github.com/Raccoon-CI/raccoonci/pkg/wire"
+	"github.com/Raccoon-CI/backend/internal/server/store"
+	"github.com/Raccoon-CI/lib/pkg/dispatch"
+	"github.com/Raccoon-CI/lib/pkg/wire"
 )
 
 const grouped = `on: push

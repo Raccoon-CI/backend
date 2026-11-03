@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Raccoon-CI/raccoonci/pkg/artifact"
-	"github.com/Raccoon-CI/raccoonci/pkg/blob"
+	"github.com/Raccoon-CI/lib/pkg/artifact"
+	"github.com/Raccoon-CI/lib/pkg/blob"
 )
 
 func TestSpaceRules(t *testing.T) {

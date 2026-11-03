@@ -5,8 +5,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/Raccoon-CI/raccoonci/internal/server/github"
-	"github.com/Raccoon-CI/raccoonci/pkg/runevent"
+	"github.com/Raccoon-CI/backend/internal/server/github"
+	"github.com/Raccoon-CI/lib/pkg/runevent"
 )
 
 // noFilePath is where GitHub puts an annotation that names no file, as its own

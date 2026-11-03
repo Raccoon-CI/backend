@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Raccoon-CI/raccoonci/pkg/dispatch"
+	"github.com/Raccoon-CI/lib/pkg/dispatch"
 )
 
 // script writes an executable shell script standing in for raccoonci.

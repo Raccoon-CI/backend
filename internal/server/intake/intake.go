@@ -25,10 +25,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Raccoon-CI/raccoonci/internal/server/github"
-	"github.com/Raccoon-CI/raccoonci/internal/server/store"
-	"github.com/Raccoon-CI/raccoonci/pkg/trigger"
-	"github.com/Raccoon-CI/raccoonci/pkg/workflow"
+	"github.com/Raccoon-CI/backend/internal/server/github"
+	"github.com/Raccoon-CI/backend/internal/server/store"
+	"github.com/Raccoon-CI/lib/pkg/trigger"
+	"github.com/Raccoon-CI/lib/pkg/workflow"
 )
 
 // maxBody is GitHub's own limit for a delivery (25 MB), a little over.

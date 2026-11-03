@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/Raccoon-CI/raccoonci/internal/server/store"
+	"github.com/Raccoon-CI/backend/internal/server/store"
 )
 
 // SignIn is auth.Service: the two steps of signing in with GitHub.

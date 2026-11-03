@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Raccoon-CI/raccoonci/pkg/blob"
+	"github.com/Raccoon-CI/lib/pkg/blob"
 )
 
 func newService(t *testing.T) (*Service, http.Handler) {

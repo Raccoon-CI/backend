@@ -7,10 +7,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Raccoon-CI/raccoonci/internal/server/store"
-	"github.com/Raccoon-CI/raccoonci/pkg/dispatch"
-	"github.com/Raccoon-CI/raccoonci/pkg/instabox"
-	"github.com/Raccoon-CI/raccoonci/pkg/runevent"
+	"github.com/Raccoon-CI/backend/internal/server/store"
+	"github.com/Raccoon-CI/lib/pkg/dispatch"
+	"github.com/Raccoon-CI/lib/pkg/instabox"
+	"github.com/Raccoon-CI/lib/pkg/runevent"
 )
 
 // kindNames are what the log says for runevent.EventKind, which is a number in

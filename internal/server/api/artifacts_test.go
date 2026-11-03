@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Raccoon-CI/raccoonci/pkg/artifact"
+	"github.com/Raccoon-CI/lib/pkg/artifact"
 )
 
 type fakeArtifacts struct {

@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/Raccoon-CI/raccoonci/internal/server/storage"
+	"github.com/Raccoon-CI/backend/internal/server/storage"
 )
 
 // StorageAdmin is storage.Service.

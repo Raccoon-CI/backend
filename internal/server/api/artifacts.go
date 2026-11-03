@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/Raccoon-CI/raccoonci/internal/server/store"
-	"github.com/Raccoon-CI/raccoonci/pkg/artifact"
+	"github.com/Raccoon-CI/backend/internal/server/store"
+	"github.com/Raccoon-CI/lib/pkg/artifact"
 )
 
 // ArtifactStore is what the artifact routes need (artifacts.Service).
