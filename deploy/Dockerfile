@@ -7,10 +7,6 @@
 # compute provider, and nothing else. Data (the database, artifacts and caches
 # kept on disk) lives in the /data volume. Secrets are given as files, never
 # baked in: see docs/deploy.md.
-#
-# Until the tag github.com/Raccoon-CI/lib v0.1.0 exists, `go mod
-# download` below cannot fetch that dependency, so this build fails inside a
-# container (outside one, the go.work in the parent directory covers it).
 
 FROM golang:1.27 AS build
 WORKDIR /src

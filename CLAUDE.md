@@ -15,9 +15,9 @@ Compute providers are pluggable (the user's own machines, InstaBox, later cheap 
 - Only `github.com/Raccoon-CI/lib` (`pkg/*`: value, workflow, expr, trigger, cron, catalog, runnerimages, wire, dispatch, runevent, jobgraph, instabox, blob, artifact, cache, archive, ...). Dependency direction: lib <- runner <- cli, and lib <- backend. **The backend must never import the runner or the cli**; `internal/server/execute/deps_test.go` runs `go list -deps -test ./...` and fails if `raccoonci-runner` or `cli` shows up.
 - It does *run* the runner's binary at run time: the machine's agent (`raccoonci-runner agent` / `raccoonci run-instance`, built in the runner and cli repositories) speaks `pkg/dispatch` to this server. The `-local-runner PATH` development mode takes the path of such a binary. That is the only link, and it is a protocol (`dispatch.ProtocolVersion`), not an import.
 
-## Developing before the tags exist
+## Developing across the repositories
 
-`go.mod` requires `lib v0.1.0` (and nothing from the runner), a tag that is not published yet. Locally, `../go.work` uses the four repository directories and replaces the unpublished versions with the local ones, so `go build ./... && go test ./...` work here without network. Therefore do **not** run `go mod tidy` in this repository until lib `v0.1.0` is tagged (it would try to fetch it); unused third-party requirements in `go.mod` are harmless until then. After the tag exists, run `go mod tidy` once. The repository's CI, and `docker build -f deploy/Dockerfile`, fail until the tag exists.
+`go.mod` requires the published `lib v0.1.0` (and nothing from the runner), so `go build ./... && go test ./...` work on their own, and so does CI. To try a change to lib together with this repository, put the checkouts side by side and add a `go.work` next to them with a `use` line for each directory (do not commit it). `go mod tidy` has been run against the published tag.
 
 ## Commands
 

@@ -51,9 +51,6 @@ Environment variables (secrets: each as `NAME` or `NAME_FILE` naming a file only
 
 Dependency direction: lib ← runner ← cli, and lib ← backend. The backend never imports the runner or the cli (a test checks it); it meets the machine's agent only through the `dispatch` protocol.
 
-## Not published yet
+## Dependencies
 
-`go.mod` requires `lib v0.1.0`, a tag that does not exist yet. Until it does:
-
-- Build and test with the workspace `go.work` that sits next to the four repository directories (it replaces the unpublished versions with the local directories). Do not run `go mod tidy` here yet.
-- This repository's CI (`.github/workflows/ci.yml`) fails, and so does `docker build -f deploy/Dockerfile .` (`go mod download` cannot fetch lib in the container). Nothing in the code is changed because of this; once lib is tagged, run `go mod tidy` once and both work.
+`go.mod` requires `lib v0.1.0`, which is published, so `go build ./...` and the CI (`.github/workflows/ci.yml`) work on their own. `docker build -f deploy/Dockerfile .` fetches lib with `go mod download` inside the container; that is expected to work now that lib is public, but it has not been run yet.

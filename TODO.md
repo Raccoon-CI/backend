@@ -6,7 +6,7 @@
 
 **历史里要知道的一件事**：原单体仓库里有一段提交的 `engine.go` 编译不过（这段坏历史已接受、不重写）。`engine.go` 现在在 runner 仓库，本仓库里没有这个文件，不受影响；具体哈希见 runner 仓库的 `CLAUDE.md`。
 
-**拆分之后的状态**：本仓库只依赖 `lib`（`go.mod` 里写的是 `v0.1.0`，这个标签还不存在；本地靠 `../go.work` 的 replace 构建）。标签出现后在本仓库跑一次 `go mod tidy`（现在不要跑，它会去取不存在的标签）。`internal/server/execute/deps_test.go` 守着“`go list -deps` 里不得出现 runner 或 cli 仓库”。下面条目里的旧路径（`internal/...`、`pkg/...`、`cmd/raccoonci`）是写那条时的路径：`pkg/*` 现在在 lib 仓库，`cmd/raccoonci` 在 cli 仓库，`raccoonci run-instance` 在 runner/cli 仓库。
+**拆分之后的状态**：本仓库只依赖 `lib`（`go.mod` 里写的是已发布的 `v0.1.0`，`go mod tidy` 已经跑过，CI 通过）。`internal/server/execute/deps_test.go` 守着“`go list -deps` 里不得出现 runner 或 cli 仓库”。下面条目里的旧路径（`internal/...`、`pkg/...`、`cmd/raccoonci`）是写那条时的路径：`pkg/*` 现在在 lib 仓库，`cmd/raccoonci` 在 cli 仓库，`raccoonci run-instance` 在 runner/cli 仓库。
 
 ## 待办（拆分后，从 D.6 和 B.3 带来）
 

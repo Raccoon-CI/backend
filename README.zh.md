@@ -51,9 +51,6 @@ raccoonci-server -allow owner/name [-allow owner/*] [-listen 127.0.0.1:18080] [-
 
 依赖方向：lib ← runner ← cli，以及 lib ← backend。backend 不会引用 runner 或 cli（有测试守着）；它与机器上的 agent 只通过 `dispatch` 协议相遇。
 
-## 尚未发布
+## 依赖
 
-`go.mod` 里写的是 `lib v0.1.0`，这个标签还不存在。在它出现之前：
-
-- 用四个仓库目录旁边的工作区 `go.work` 构建和测试（它把未发布的版本替换成本地目录）。现在不要在这里跑 `go mod tidy`。
-- 本仓库的 CI（`.github/workflows/ci.yml`）会失败，`docker build -f deploy/Dockerfile .` 也会失败（容器里 `go mod download` 取不到 lib）。代码没有为此做任何改动；lib 打上标签后，跑一次 `go mod tidy`，两者就都能用了。
+`go.mod` 里写的是已发布的 `lib v0.1.0`，所以 `go build ./...` 和 CI（`.github/workflows/ci.yml`）都能直接用。`docker build -f deploy/Dockerfile .` 在容器里用 `go mod download` 取 lib；lib 现在是公开的，预期能行，但还没有实际跑过。
