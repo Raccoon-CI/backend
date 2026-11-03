@@ -124,6 +124,10 @@ func newEnv(t *testing.T, edit func(*Config)) *env {
 		installs: map[string][]int64{"Alice": {1, 2}, "bob": {1}, "Boss": {1}, "nobody": {}},
 		repos:    map[int64][]string{1: {"Acme/web", "acme/api"}, 2: {"Solo/tool", "acme/web"}},
 	}}
+	// The store judges whether a session has expired, so it must tell the same
+	// time as the service; with the real clock these tests failed once the real
+	// date was a day past the fixed one.
+	st.Now = func() time.Time { return e.now }
 	srv := httptest.NewServer(e.gh.handler(t, "Iv1.client", "client-secret"))
 	t.Cleanup(srv.Close)
 	cfg := Config{ClientID: "Iv1.client", ClientSecret: "client-secret", PublicURL: "https://ci.example.com", Admins: []string{" Boss "},
