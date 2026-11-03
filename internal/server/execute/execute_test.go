@@ -18,6 +18,7 @@ import (
 	"github.com/Raccoon-CI/raccoonci/internal/server/secrets"
 	"github.com/Raccoon-CI/raccoonci/internal/server/store"
 	"github.com/Raccoon-CI/raccoonci/internal/server/vault"
+	"github.com/Raccoon-CI/raccoonci/pkg/catalog"
 	"github.com/Raccoon-CI/raccoonci/pkg/dispatch"
 	"github.com/Raccoon-CI/raccoonci/pkg/runevent"
 	"github.com/Raccoon-CI/raccoonci/pkg/runnerimages"
@@ -304,6 +305,57 @@ func TestARunIsPlannedWithTheImagesTheServerPolledAndSurvivesAnUnreadableOne(t *
 	}
 	if asked != 2 {
 		t.Fatalf("Images was asked %d times, want once per run", asked)
+	}
+}
+
+func TestTheCatalogARunWasPlannedWithTravelsWithEveryJobAndAFailingOneFallsBack(t *testing.T) {
+	const feed = "toolchains:\n  zig: {title: Zig, commands: [zig]}\n"
+	e := newEnv(t)
+	var asked int
+	e.ex.Catalog = func(context.Context) (*catalog.Catalog, []byte, error) {
+		asked++
+		if asked == 2 {
+			return catalog.Default(), nil, errors.New("the database could not be read")
+		}
+		cat, err := catalog.Default().Overlay([]byte(feed))
+		return cat, []byte(feed), err
+	}
+	e.start(t)
+	for i, d := range []string{"cat1", "cat2"} {
+		run := e.queue(t, d, twoJobs, nil)
+		if done := e.wait(t, run.ID); done.Conclusion != "success" {
+			t.Fatalf("run %d: conclusion %q", i, done.Conclusion)
+		}
+	}
+	e.m.mu.Lock()
+	defer e.m.mu.Unlock()
+	if len(e.m.calls) != 4 || asked != 2 {
+		t.Fatalf("%d jobs, Catalog asked %d times (want 4, once per run)", len(e.m.calls), asked)
+	}
+	withFeed := 0
+	for _, c := range e.m.calls {
+		if c.spec.Catalog == feed {
+			withFeed++
+		} else if len(c.spec.Catalog) != 0 {
+			t.Errorf("job %s sent catalog %q", c.spec.Job, c.spec.Catalog)
+		}
+	}
+	if withFeed != 2 {
+		t.Errorf("%d jobs carried the feed, want the 2 of the first run", withFeed)
+	}
+}
+
+func TestWithoutACatalogSourceNothingIsSent(t *testing.T) {
+	e := newEnv(t)
+	run := e.queue(t, "nocat", twoJobs, nil)
+	e.start(t)
+	e.wait(t, run.ID)
+	e.m.mu.Lock()
+	defer e.m.mu.Unlock()
+	for _, c := range e.m.calls {
+		if len(c.spec.Catalog) != 0 {
+			t.Errorf("job %s sent catalog %q", c.spec.Job, c.spec.Catalog)
+		}
 	}
 }
 

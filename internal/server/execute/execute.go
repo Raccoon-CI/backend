@@ -145,6 +145,10 @@ type Executor struct {
 	// Images, if set, gives the runner-images snapshot a run is planned with
 	// (default: the one compiled in).
 	Images func(ctx context.Context) (*runnerimages.Snapshot, error)
+	// Catalog, if set, gives the catalog a run is planned with and the feed text
+	// it was made from (nil for the built-in catalog); the text is sent with
+	// every job so the machine plans with the same one. Default: the built-in one.
+	Catalog func(ctx context.Context) (*catalog.Catalog, []byte, error)
 	// MaxSourceBytes caps the source package fetched for one run (default 2 GiB).
 	MaxSourceBytes int64
 	// Reporter, if set, is told when a run starts and how it ended.
@@ -387,7 +391,7 @@ func (e *Executor) execute(parent context.Context, run store.Run) {
 		Github:      x.github,
 		Vars:        x.vars,
 		Inputs:      x.inputs,
-		Catalog:     catalog.Default(),
+		Catalog:     x.catalog,
 		MaxParallel: x.maxParallel,
 		OnEvent:     sink.Add,
 	})
@@ -416,6 +420,23 @@ func (e *Executor) runnerImages(ctx context.Context) (*runnerimages.Snapshot, er
 		e.log().Warn("the polled runner-images data could not be read; using the built-in snapshot", "err", err)
 	}
 	return snap, nil
+}
+
+// runCatalog is the catalog a run is planned with and its feed text: Catalog's
+// answer, or the built-in catalog. Catalog failing still gives a catalog (the
+// built-in one); the failure is logged.
+func (e *Executor) runCatalog(ctx context.Context) (*catalog.Catalog, []byte) {
+	if e.Catalog == nil {
+		return catalog.Default(), nil
+	}
+	cat, body, err := e.Catalog(ctx)
+	if err != nil {
+		e.log().Warn("the catalog feed could not be used; using the built-in catalog", "err", err)
+	}
+	if cat == nil {
+		return catalog.Default(), nil
+	}
+	return cat, body
 }
 
 // Reporter tells GitHub how a run is going (a commit status, or a check run).
@@ -496,6 +517,10 @@ type execution struct {
 	// imagesJSON is the runner-images snapshot the run was planned with, sent
 	// with every job so the machine plans with the same data.
 	imagesJSON []byte
+	// catalog is the catalog the run was planned with, and catalogBody the feed
+	// text it was made from (nil for the built-in one), sent with every job.
+	catalog     *catalog.Catalog
+	catalogBody []byte
 	// secrets are the opened values this run's workflow names, sent to each
 	// machine in its assignment; vars the variables of its repository.
 	secrets map[string]string
@@ -559,7 +584,8 @@ func (e *Executor) prepare(ctx context.Context, run store.Run, sink *sink) (_ *e
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
-	x := &execution{e: e, run: run, log: e.log().With("run", run.ID), sink: sink, w: w, inputs: inputs, images: images, dir: dir,
+	cat, catBody := e.runCatalog(ctx)
+	x := &execution{e: e, run: run, catalog: cat, catalogBody: catBody, log: e.log().With("run", run.ID), sink: sink, w: w, inputs: inputs, images: images, dir: dir,
 		github: githubContext(run, payload, number, attempt), maxParallel: e.MaxParallel, secrets: secretValues, vars: vars,
 		installation: ev.InstallationID}
 	if x.maxParallel < 1 {
@@ -757,7 +783,7 @@ func (x *execution) runInstance(ctx context.Context, inst jobgraph.RemoteInstanc
 	if install == "" {
 		install = "all"
 	}
-	input, err := json.Marshal(wire.InstanceSpec{Protocol: wire.Version, Workflow: x.run.WorkflowPath, Job: inst.Job.ID, Contexts: contexts, ServiceEnv: svcEnv, Install: install, Images: x.imagesJSON})
+	input, err := json.Marshal(wire.InstanceSpec{Protocol: wire.Version, Workflow: x.run.WorkflowPath, Job: inst.Job.ID, Contexts: contexts, ServiceEnv: svcEnv, Install: install, Images: x.imagesJSON, Catalog: string(x.catalogBody)})
 	if err != nil {
 		return runevent.Result{}, err
 	}

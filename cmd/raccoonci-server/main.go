@@ -23,6 +23,7 @@ import (
 	"github.com/Raccoon-CI/raccoonci/internal/server/artifacts"
 	"github.com/Raccoon-CI/raccoonci/internal/server/auth"
 	"github.com/Raccoon-CI/raccoonci/internal/server/caches"
+	"github.com/Raccoon-CI/raccoonci/internal/server/catalogsync"
 	"github.com/Raccoon-CI/raccoonci/internal/server/config"
 	"github.com/Raccoon-CI/raccoonci/internal/server/execute"
 	"github.com/Raccoon-CI/raccoonci/internal/server/github"
@@ -37,6 +38,7 @@ import (
 	"github.com/Raccoon-CI/raccoonci/internal/server/store"
 	"github.com/Raccoon-CI/raccoonci/internal/server/vault"
 	"github.com/Raccoon-CI/raccoonci/pkg/blob"
+	"github.com/Raccoon-CI/raccoonci/pkg/catalog"
 	"github.com/Raccoon-CI/raccoonci/pkg/dispatch"
 	"github.com/Raccoon-CI/raccoonci/pkg/instabox"
 	"github.com/Raccoon-CI/raccoonci/pkg/runnerimages"
@@ -97,6 +99,9 @@ func run(args []string) error {
 	publicURL := fs.String("public-url", "", "the https address the machines reach this server at (their job assignments, artifacts); needed to run jobs")
 	snapshot := fs.String("snapshot", os.Getenv("RACCOONCI_INSTABOX_SNAPSHOT"), "the InstaBox runner snapshot machines start from (env RACCOONCI_INSTABOX_SNAPSHOT); needed to run jobs")
 	status := fs.Bool("status", true, "report each run to GitHub as a commit status (raccoonci / <workflow>) on the commit it ran; the token or App needs to write commit statuses")
+	catalogURL := fs.String("catalog-url", os.Getenv("RACCOONCI_CATALOG_URL"), "pull the catalog feed from this https URL (env RACCOONCI_CATALOG_URL); runs are planned with the last good feed laid over the built-in catalog")
+	catalogKey := fs.String("catalog-key", os.Getenv("RACCOONCI_CATALOG_KEY"), "base64 ed25519 public key(s), comma-separated, the feed must be signed by one of (env RACCOONCI_CATALOG_KEY)")
+	catalogEvery := fs.Duration("catalog-interval", 24*time.Hour, "how often to pull the catalog feed (0 = never pull; a feed already stored is still used)")
 	imagesEvery := fs.Duration("runner-images-interval", 6*time.Hour, "how often to read what GitHub's hosted runner images preinstall (no token needed); runs are planned with the last good data, else the snapshot built into the binary (0 = never poll)")
 	quotaRepo := fs.Int64("quota-repo-minutes", 0, "an allowance of machine time per UTC month for each repository, in minutes (0: none); a run of a repository that used it up fails at once with the reason, and runs start again on the 1st")
 	quotaOwner := fs.Int64("quota-owner-minutes", 0, "the same for each owner (user or organization) over all its repositories (0: none)")
@@ -268,7 +273,7 @@ Secrets are read from the environment, or from the file named by NAME_FILE (mode
 
 	// Execution needs three things together: where machines reach the
 	// server, the runner snapshot to start them from, and the InstaBox key.
-	var executed, janitor, cacheJanitor, imagesDone chan struct{}
+	var executed, janitor, cacheJanitor, imagesDone, catalogDone chan struct{}
 	execFailed := make(chan error, 1)
 	keep := time.Duration(*artifactDays) * 24 * time.Hour
 	instaboxMode := *publicURL != "" || *snapshot != "" || instaboxKey != ""
@@ -364,6 +369,22 @@ Secrets are read from the environment, or from the file named by NAME_FILE (mode
 				defer close(imagesDone)
 				syncer.Run(ctx, *imagesEvery)
 			}()
+		}
+		feedURL, feedKeys, err := catalog.ResolveFeed(*catalogURL, *catalogKey)
+		if err != nil {
+			return fmt.Errorf("-catalog-key: %w", err)
+		}
+		if feedURL != "" {
+			csync := &catalogsync.Syncer{Store: st, Log: log, Source: &catalog.Source{
+				URL: feedURL, PublicKeys: feedKeys, CacheDir: filepath.Join(*dataDir, "catalog")}}
+			ex.Catalog = csync.Current
+			if *catalogEvery > 0 {
+				catalogDone = make(chan struct{})
+				go func() {
+					defer close(catalogDone)
+					csync.Run(ctx, *catalogEvery)
+				}()
+			}
 		}
 		ex.Quota = execute.Quota{RepoMinutes: *quotaRepo, OwnerMinutes: *quotaOwner}
 		apiSvc.Quota = api.Quota{RepoMinutes: *quotaRepo, OwnerMinutes: *quotaOwner}
@@ -484,6 +505,9 @@ Secrets are read from the environment, or from the file named by NAME_FILE (mode
 	}
 	if imagesDone != nil {
 		<-imagesDone
+	}
+	if catalogDone != nil {
+		<-catalogDone
 	}
 	if executed != nil {
 		<-executed // runs in progress are cancelled and recorded
