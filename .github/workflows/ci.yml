@@ -1,3 +1,4 @@
+# Fails until github.com/Raccoon-CI/lib v0.1.0 is tagged (go.mod requires it).
 name: ci
 
 on:
