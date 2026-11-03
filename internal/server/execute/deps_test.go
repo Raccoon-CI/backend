@@ -1,54 +1,30 @@
 package execute
 
 import (
-	"go/parser"
-	"go/token"
-	"path/filepath"
-	"strconv"
+	"os/exec"
 	"strings"
 	"testing"
 )
 
-// internalDeps lists the packages of this module that the non-test files of
-// the package in dir import, directly or not (by reading the files, so no
-// build is needed).
-func internalDeps(t *testing.T, dir string, seen map[string]bool) {
-	t.Helper()
-	files, err := filepath.Glob(filepath.Join(dir, "*.go"))
+// The backend must not depend on the runner or the cli (S1, TODO D.3). They are
+// separate modules now, so the check is on `go list -deps` of every package of
+// this module, tests included: no package of raccoonci-runner or cli
+// may be among them.
+func TestBackendDoesNotDependOnRunnerOrCLI(t *testing.T) {
+	cmd := exec.Command("go", "list", "-deps", "-test", "-f", "{{.ImportPath}}", "./...")
+	cmd.Dir = "../../.."
+	out, err := cmd.Output()
 	if err != nil {
-		t.Fatal(err)
+		if ee, ok := err.(*exec.ExitError); ok {
+			t.Fatalf("go list: %v\n%s", err, ee.Stderr)
+		}
+		t.Fatalf("go list: %v", err)
 	}
-	for _, f := range files {
-		if strings.HasSuffix(f, "_test.go") {
-			continue
-		}
-		parsed, err := parser.ParseFile(token.NewFileSet(), f, nil, parser.ImportsOnly)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, imp := range parsed.Imports {
-			path, _ := strconv.Unquote(imp.Path.Value)
-			rest, ok := strings.CutPrefix(path, "github.com/Raccoon-CI/raccoonci/")
-			if !ok || seen[path] {
-				continue
+	for _, pkg := range strings.Fields(string(out)) {
+		for _, bad := range []string{"github.com/Raccoon-CI/runner", "github.com/Raccoon-CI/cli"} {
+			if pkg == bad || strings.HasPrefix(pkg, bad+"/") {
+				t.Errorf("the backend depends on %s", pkg)
 			}
-			seen[path] = true
-			internalDeps(t, filepath.Join("..", "..", "..", filepath.FromSlash(rest)), seen)
-		}
-	}
-}
-
-// The backend must not depend on the runner side (S1, TODO D.3): none of the
-// packages that run steps, scan, provision or download actions, directly or
-// not, outside the server's own packages.
-func TestServerDoesNotDependOnTheRunnerSide(t *testing.T) {
-	seen := map[string]bool{}
-	for _, dir := range []string{".", "../api", "../intake", "../schedule", "../imagesync", "../instsync", "../oidc", "../retention"} {
-		internalDeps(t, dir, seen)
-	}
-	for _, bad := range []string{"runner", "engine", "scan", "provision", "actions", "docker", "local", "missing", "nodejs", "runnercmd"} {
-		if seen["github.com/Raccoon-CI/raccoonci/internal/"+bad] {
-			t.Errorf("the backend depends on internal/%s", bad)
 		}
 	}
 }
