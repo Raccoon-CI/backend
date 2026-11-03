@@ -9,7 +9,7 @@ State: steps 1 and 2 of `docs/server-design.md`. The server receives GitHub's `p
 (To run it on a machine of its own — systemd, a container, a reverse proxy, backups — see [deploy.md](deploy.md).)
 
 ```sh
-make build                       # dist/raccoonci and dist/raccoonci-server
+make build                       # dist/raccoonci-server
 raccoonci-server -allow owner/name [-allow owner/*] [-listen 127.0.0.1:18080] [-data-dir DIR] [how to run jobs]
 ```
 
@@ -18,7 +18,7 @@ At least one `-allow` is needed: a delivery or request for any other repository 
 **How to run jobs** (without one of these, runs stay queued):
 
 - InstaBox: `-public-url https://…` (where machines reach the server), `-snapshot ID` (the runner snapshot; env `RACCOONCI_INSTABOX_SNAPSHOT`) and the InstaBox key in `INSTABOX_API_KEY` or `IBX_API_KEY`. Each job instance gets a machine of its own; the machine's agent calls back at `<public-url>/agent`.
-- `-local-runner PATH-TO-raccoonci`: jobs run **on the machine the server runs on, as the same user, with no isolation**. For development, or a machine that exists for this, with code you trust. Jobs reach the server at the listen address, so it must be a loopback one unless `-public-url` is given.
+- `-local-runner PATH-TO-raccoonci` (the `raccoonci` binary is built in the cli repository, `cli`, `./cmd/raccoonci`): jobs run **on the machine the server runs on, as the same user, with no isolation**. For development, or a machine that exists for this, with code you trust. Jobs reach the server at the listen address, so it must be a loopback one unless `-public-url` is given.
 
 ## Secrets
 

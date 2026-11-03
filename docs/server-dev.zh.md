@@ -9,7 +9,7 @@
 （要把它跑在一台自己的机器上——systemd、容器、反向代理、备份——见 [deploy.zh.md](deploy.zh.md)。）
 
 ```sh
-make build                       # dist/raccoonci 和 dist/raccoonci-server
+make build                       # dist/raccoonci-server
 raccoonci-server -allow owner/name [-allow owner/*] [-listen 127.0.0.1:18080] [-data-dir DIR] [怎么跑 job]
 ```
 
@@ -18,7 +18,7 @@ raccoonci-server -allow owner/name [-allow owner/*] [-listen 127.0.0.1:18080] [-
 **怎么跑 job**（下面两种都没配时，run 一直排队）：
 
 - InstaBox：`-public-url https://…`（机器访问服务端的地址）、`-snapshot ID`（runner 快照；环境变量 `RACCOONCI_INSTABOX_SNAPSHOT`）和 `INSTABOX_API_KEY` 或 `IBX_API_KEY` 里的 InstaBox 密钥。每个 job 实例一台机器；机器上的 agent 回连 `<public-url>/agent`。
-- `-local-runner raccoonci 二进制的路径`：job **跑在服务端所在的这台机器上，用同一个用户，没有任何隔离**。只用于开发，或者专门为此准备的机器，并且只跑你信任的代码。job 通过监听地址访问服务端，所以监听地址必须是回环地址，除非给了 `-public-url`。
+- `-local-runner raccoonci 二进制的路径`（该二进制由 cli 仓库 `cli` 的 `./cmd/raccoonci` 构建）：job **跑在服务端所在的这台机器上，用同一个用户，没有任何隔离**。只用于开发，或者专门为此准备的机器，并且只跑你信任的代码。job 通过监听地址访问服务端，所以监听地址必须是回环地址，除非给了 `-public-url`。
 
 ## 密钥
 
