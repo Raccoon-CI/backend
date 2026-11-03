@@ -138,6 +138,8 @@ InstaBox 限制一个组织每分钟起机的数量（Pro 套餐 10 台），超
 
 公平：执行器有空位（`MaxRuns`，默认 4）时，下一个领的是排队的 run 里"所属仓库正在跑的 run 最少"的那个，一样多就先到先得。一个仓库排了五十个 run 也饿不死别的仓库，只有一个仓库有活时它仍然独占所有空位。没有按仓库或组织配置的额度（比如机器时间的配额）：那需要用量统计，还没做。
 
+catalog feed：给了 `-catalog-url`（环境变量 `RACCOONCI_CATALOG_URL`）时，服务端启动时和之后每 `-catalog-interval`（默认 24 小时，0 表示不拉；库里已有的 feed 仍会用）拉一次 feed，用 `-catalog-key`（环境变量 `RACCOONCI_CATALOG_KEY`；可逗号分隔多把，任一把验过即可）校验，验过的原文存进数据库；拉取的缓存在 `<data-dir>/catalog`。run 用内置 catalog 盖上这份原文来规划；没有 feed、没给 URL 或库里的原文读不出来时用内置 catalog（失败写日志）。一个 run 规划时用的原文放在每个 job 的 `catalog` 字段里发给机器（字符串；协议版本不变），`run-instance` 先校验再盖在自己内置的 catalog 上，所以服务端和机器的规划一致；机器用不了的原文只在 job 日志里留一行，改用内置的；旧版本的机器会忽略这个字段。从密钥列表里去掉的密钥在下一次拉取起不再被信任，但已存的原文继续用，直到下一次拉取替换它。不给 URL（也没有默认值，见 `catalog.DefaultFeedURL`）时行为不变。
+
 runner 镜像：启动时和之后每 `-runner-images-interval`（默认 6 小时，0 表示不轮询）把 GitHub 托管镜像预装了什么读进数据库（来源和 `raccoonci runner-images update` 一样，不需要令牌）。run 用内置快照盖上这份数据来规划；读不到的镜像保留上次的好数据。一个 run 规划时用的那份数据（约 10 KB）会随它的每个 job 一起发给机器，`run-instance` 用它而不是二进制里内置的快照，所以服务端和机器对"预装了什么"的看法一致。机器用不了的数据（不是真的快照）只在 job 日志里留一行，改用内置的；旧版本的机器会忽略这个字段。
 
 ## Artifact
